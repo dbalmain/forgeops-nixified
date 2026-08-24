@@ -1,0 +1,454 @@
+# forgeops-local — plan
+
+A one-command, nix-only local Ping Identity Platform (on-prem / ForgeOps)
+stack, with a TypeScript authoring workflow for everything a developer writes.
+
+```sh
+cd forgeops && fo up      # stack running
+fo down                   # stack gone
+```
+
+Status: **plan for review**. Nothing is built yet. Decisions taken so far are
+recorded in [Decisions](#decisions); open questions are flagged inline as
+**[OPEN]**.
+
+---
+
+## 1. What we're targeting
+
+Verified against the `identity-platform-2026.3.0` tag of
+[ForgeRock/forgeops](https://github.com/ForgeRock/forgeops) and the
+[2026.3 docs](https://docs.pingidentity.com/forgeops/2026.3/index.html), on
+2026-08-25.
+
+| Thing               | Value                                                                     |
+| ------------------- | ------------------------------------------------------------------------- |
+| ForgeOps release    | 2026.3.0                                                                  |
+| Platform version    | PingAM/PingDS/PingIDM **8.1.1**                                           |
+| Images              | `us-docker.pkg.dev/forgeops-public/images/{am,idm,ds,amster,*-ui}`        |
+| Image architectures | linux/amd64 **and** linux/arm64                                           |
+| Image auth          | **none** — anonymous pull works                                           |
+| Helm chart          | `identity-platform` 2026.3.0 from `https://ForgeRock.github.io/forgeops/` |
+
+Four findings from reading the repo shape the whole design:
+
+1. **2026.3 added native Helm-generated secrets.**
+   `charts/identity-platform/values-helm-generate-secrets.yaml` drives
+   `platform-secrets.yaml`, which does `lookup` on the existing Secret and only
+   falls back to `randAlphaNum`. That means **no secret operator is needed**
+   (secret-agent and secret-generator both drop out) and passwords are **stable
+   across redeploys** — a `helm upgrade` re-reads what's already there. For a
+   dev stack this is exactly right.
+
+2. **`forgeops prereqs` now defaults to Traefik**, not nginx. k3s ships Traefik
+   as its default ingress. The chart already carries Traefik sticky-cookie
+   service annotations.
+
+3. **`FORGEOPS_DATA`** (`lib/python/utils.py:554`, `bin/commands/common.sh:178`)
+   splits the forgeops CLI from the tree it writes into. That is the seam that
+   lets the CLI sit read-only in the nix store while `helm/`, `kustomize/` and
+   `docker/` live in this repo.
+
+4. **Config profiles are separate busybox images since 2026.1**, copied by an
+   init container into an `emptyDir` that the app container mounts. For IDM that
+   emptyDir lands on `/opt/openidm/conf`, `/script` and `/ui`
+   (`charts/identity-platform/templates/idm-deployment.yaml`), and IDM runs with
+   `OPENIDM_CONFIG_REPO_ENABLED: "false"` — pure file-based config. So a file
+   synced into a running IDM pod should hot-reload. That is the fast inner loop.
+   AM's equivalent (`/home/forgerock/openam`) is read at **startup only**.
+
+Every tool ForgeOps validates is in nixpkgs at effectively the validated
+version:
+
+| Tool      | Ping validates | nixpkgs |
+| --------- | -------------- | ------- |
+| kustomize | 5.8.1          | 5.8.1   |
+| kubectx   | 0.11.0         | 0.11.0  |
+| minikube  | 1.38.1         | 1.38.1  |
+| kubectl   | 1.36.1         | 1.36.3  |
+| Helm      | 4.2.0          | 4.2.4   |
+| jq        | 1.8.1          | 1.8.2   |
+
+Plus `k3d` 5.9.0, `tilt` 0.37.6, `nodejs_24` 24.19.0.
+
+---
+
+## 2. Decisions
+
+Taken 2026-08-25.
+
+| #   | Decision                                                                        | Rationale                                                                                                                                                                                                                  |
+| --- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **k3d** as the local Kubernetes runtime                                         | ~20s cluster create; bundles Traefik (2026.3's default ingress) and local-path storage; maps `:80`/`:443` to the host so there is **no `minikube tunnel` daemon** to babysit; single nix binary. Cost: not Ping-validated. |
+| D2  | **Bypass the `forgeops` CLI**; keep it as an escape hatch                       | Drive the upstream Helm chart directly. `fo` generates values from a typed config; the thin bits (info, export, amster) are `kubectl exec` wrappers we own in TypeScript. Removes python and bash from the hot path.       |
+| D3  | **TypeScript for scripts and endpoints now**; typed config later                | Port the `pingone-aic-manager` framework. IDM `conf/*.json` and AM FBC stay JSON, round-tripped by export.                                                                                                                 |
+| D4  | Stack = **AM, IDM, DS (idrepo + cts), amster, admin-ui, end-user-ui, login-ui** | IG designed for but not built.                                                                                                                                                                                             |
+| D5  | **Multiple named envs, at zero cost to people who don't use them**              | One flag, `--env NAME`, default `dev`. See §7.                                                                                                                                                                             |
+
+---
+
+## 3. Architecture
+
+```
+                          fo up
+                            │
+      ┌─────────────────────┼─────────────────────┐
+      ▼                     ▼                     ▼
+  ensure cluster       ensure prereqs         tilt up
+  (k3d, 1 node)        cert-manager             │
+  Traefik built in     selfsigned Issuer        │
+  :80/:443 → host      `fast` StorageClass      │
+                                                ▼
+                              ┌─────────────────────────────────┐
+                              │  helm upgrade --install         │
+                              │    identity-platform 2026.3.0   │
+                              │      values.yaml      (chart)   │
+                              │    + values-helm-generate-      │
+                              │        secrets.yaml   (chart)   │
+                              │    + values.gen.yaml  (fo)      │
+                              └─────────────────────────────────┘
+                                                │
+                     ┌──────────────┬───────────┼───────────┬──────────────┐
+                     ▼              ▼           ▼           ▼              ▼
+                 am (1)         idm (1)   ds-idrepo(1)  ds-cts(1)    3 × UI pods
+                 1800Mi         1280Mi      1366Mi       1366Mi       100Mi ea
+```
+
+Pod memory requests total **≈6.5 GB**; add ~1 GB for k3s and cert-manager.
+The chart's own `values.yaml` is already single-instance sized, so we need no
+`--single-instance` equivalent — we layer on top of the defaults.
+
+### The three-tier inner loop
+
+This is the "update it easily" half of the brief, and it is the part that
+justifies Tilt.
+
+| You edit                                                         | Mechanism                                                                                                                                                              | Turnaround      |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `platform/idm/conf/**.json`, `platform/typescript/src/**`        | Tilt `live_update` syncs the built artefact into `/opt/openidm/conf` and `/opt/openidm/script` in the running pod. IDM's file-install watcher reloads. **No restart.** | target **< 5s** |
+| `platform/amster/config/**` (journeys, OAuth2 clients, services) | Re-run the amster Job                                                                                                                                                  | ~60s            |
+| `platform/am/config/**` (AM file-based config)                   | Rebuild the `am-config` busybox image, roll the AM pod                                                                                                                 | ~2 min          |
+
+AM being slow is acceptable because AM config is normally _exported from the
+console_, not hand-edited — `fo config export am` pulls it back into the repo.
+
+**[OPEN — the single biggest technical assumption in this plan.]** IDM
+hot-reload of `conf/` and `script/` from a `live_update` sync is inferred from
+`OPENIDM_CONFIG_REPO_ENABLED: "false"` plus IDM's Felix file-install defaults.
+It is **not yet verified**. Phase 0 proves or disproves it. If it turns out
+false, the IDM tier degrades to the amster tier (restart the pod, ~45s) and the
+loop is worse but not broken.
+
+### Startup seed vs fast path
+
+The chart seeds config from a busybox `*_custom` image via an init container.
+We keep that mechanism intact rather than fighting it:
+
+- **Startup**: `fo`/Tilt builds `am-config` and `idm-config` busybox images
+  (a `COPY` of the profile — sub-second builds) into the k3d registry, and
+  points `am_custom.image` / `idm_custom.image` at them.
+- **Steady state**: Tilt `live_update` bypasses the image entirely and syncs
+  into the running container.
+
+Both paths read the same files in `platform/`, so they cannot drift.
+
+---
+
+## 4. Repository layout
+
+```text
+forgeops/
+  flake.nix flake.lock .envrc     # the only entry point; `use flake`
+  fo.config.ts                    # THE file a developer edits to shape the stack
+  Tiltfile                        # thin — delegates to `fo tilt:*` subcommands
+
+  tools/fo/                       # the `fo` CLI, TypeScript, no build step
+    main.ts
+    commands/{up,down,status,logs,shell,config,export,doctor,upgrade,tilt}.ts
+    cluster/k3d.ts                # cluster lifecycle (the D1 seam)
+    prereqs/{cert-manager,storage}.ts
+    values/                       # fo.config.ts -> values.gen.yaml
+    k8s/                          # thin typed kubectl / helm wrappers
+    secrets.ts                    # read back the Helm-generated secrets
+
+  platform/                       # everything a developer authors — version controlled
+    am/config/                    # AM FBC profile (EXPORTED, not hand-written)
+    amster/config/                # amster JSON: journeys, OAuth2 clients, services
+    idm/conf/                     # IDM file-based config JSON
+    idm/script/                   # GENERATED from typescript/  (gitignored)
+    typescript/                   # ported from pingone-aic-manager
+      framework/                  # MANAGED  routing, validation, logging, errors, OpenAPI
+      tools/build.mjs             # MANAGED  esbuild -> Babel ES5 -> runtime-ban lint
+      src/endpoints/              # YOURS    one file per IDM custom endpoint
+      src/scripts/                # YOURS    IDM + AM scripts
+      src/shared/                 # YOURS    shared modules, bundled at build time
+      tests/
+
+  .fo/                            # gitignored per-developer state
+    <env>/values.gen.yaml  <env>/kubeconfig  <env>/state.json
+
+  docs/
+```
+
+`platform/` is the deliverable a team version-controls and reviews. Everything
+else is machinery.
+
+### Managed / seeded / yours
+
+Straight from `pingone-aic-manager`'s `workspace update` model, because it
+works: `framework/` and `tools/` are **managed** (rewritten by `fo upgrade`,
+content-hashed so a file you edited is never clobbered silently), `src/` is
+**seeded once**, `platform/*/config` is **yours**.
+
+---
+
+## 5. The nix flake
+
+The whole "nix is all you need" claim rests on this.
+
+```nix
+inputs = {
+  nixpkgs.url    = "github:NixOS/nixpkgs/nixos-unstable";
+  forgeops-src   = { url = "github:ForgeRock/forgeops/identity-platform-2026.3.0";
+                     flake = false; };
+};
+```
+
+Outputs:
+
+- **`devShells.default`** — k3d, kubectl, helm, kustomize, jq, nodejs_24, tilt,
+  docker-client, `forgeops` (wrapped), and `fo` on `PATH`.
+- **`packages.fo`** — the CLI. Node 24 runs the TypeScript **directly** via
+  native type stripping — no tsc, no bundler, no build step, exactly as
+  `pingone-aic-manager`'s endpoint tests do. Wrapped with the store paths of the
+  pinned chart, the forgeops source, and `node_modules`.
+- **`packages.node-modules`** — built by nix from a committed lockfile, so
+  **`npm install` never runs on a developer machine**. This is what keeps the
+  "nix and nothing else" promise honest.
+- **`packages.forgeops`** — the upstream CLI, wrapped. `forgeops configure`'s
+  pip/venv dance is replaced by a nix python env plus a generated
+  `lib/dependencies/.configured_version` marker containing the sha1 of
+  `requirements.txt` that `ensure_configuration_is_valid_or_exit.py` demands.
+  **pip never runs.** Reachable as `fo forgeops …`.
+- **`apps.default`** — so `nix run github:…/forgeops -- up` works with no
+  checkout and no direnv.
+
+`.envrc` is one line, `use flake`. direnv is a recommendation, not a
+requirement: `nix develop -c fo up` is the fallback.
+
+**Host prerequisites: nix, and a Docker daemon.** k3d needs a container
+runtime; that is irreducible. `fo doctor` checks for it and says exactly what to
+install if it's missing.
+
+---
+
+## 6. The `fo` CLI
+
+TypeScript throughout. Node 24 from nix, type-stripping only.
+
+| Command                                        | Does                                                                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `fo up [--env NAME]`                           | doctor → ensure cluster → ensure prereqs → generate values → `tilt up`. Idempotent; safe to re-run. |
+| `fo down [--env NAME]`                         | `tilt down` + delete the namespace. `--destroy` also deletes the k3d cluster.                       |
+| `fo status`                                    | pods, readiness, URLs                                                                               |
+| `fo info`                                      | URLs **and passwords**, read back from the Helm-generated secrets                                   |
+| `fo logs <component>` / `fo shell <component>` | ergonomic `kubectl`                                                                                 |
+| `fo config export am\|idm`                     | pull live config out of the pod back into `platform/`                                               |
+| `fo config diff`                               | what's running vs what's committed                                                                  |
+| `fo doctor`                                    | docker up, ports 80/443 free, RAM/disk headroom, FQDN resolution                                    |
+| `fo upgrade`                                   | bump ForgeOps/platform version; re-seed managed files, report drift                                 |
+| `fo forgeops …`                                | escape hatch to the wrapped upstream CLI                                                            |
+
+`fo up` is a **fully idempotent converge**, not a script — every step checks
+before acting, so re-running after a laptop sleep or a failed pull is the normal
+recovery, not a reinstall.
+
+### Configuration
+
+One typed file, `fo.config.ts`, is the entire surface:
+
+```ts
+import { defineStack } from "./tools/fo/config.ts";
+
+export default defineStack({
+  release: "2026.3.0", // ForgeOps release; pins chart + image tags
+  components: [
+    "am",
+    "idm",
+    "ds-idrepo",
+    "ds-cts",
+    "amster",
+    "admin-ui",
+    "end-user-ui",
+    "login-ui",
+  ],
+  // everything below is optional and defaulted
+});
+```
+
+Types are generated from the pinned chart's `values.yaml` at flake-build time,
+so a values key that ForgeOps renames becomes a **compile error at `fo up`**,
+not a silent no-op at `helm upgrade`. The chart ships no `values.schema.json`,
+so we derive the shape from the YAML.
+
+---
+
+## 7. Multiple environments, at zero cost
+
+D5's constraint was "nice, if it adds no complexity for people who don't need
+it". The way to honour that is to make the env name a **single derived
+variable** and never surface it anywhere else.
+
+`--env NAME` (default `dev`) derives, and derives nothing else:
+
+- namespace `NAME`
+- FQDN `NAME.localhost`
+- Tilt port `10350 + offset(NAME)`
+- state dir `.fo/NAME/`
+
+**One k3d cluster** (`fo`), many namespaces. A developer who never types
+`--env` sees the word "dev" in a URL and nowhere else. `fo up`, `fo down`,
+`fo info` are unchanged.
+
+### FQDN and TLS
+
+**[OPEN]** `*.localhost` resolves to 127.0.0.1 on systemd/glibc hosts (NixOS,
+most Linux) but **not on macOS**. Plan: default to `<env>.localhost`, have
+`fo doctor` actually resolve it, and fall back to `<env>.127.0.0.1.nip.io`
+(needs public DNS, no `/etc/hosts`, no sudo) when it doesn't. `--fqdn`
+overrides. Editing `/etc/hosts` needs sudo and is therefore ruled out as a
+default.
+
+cert-manager issues a self-signed cert, so browsers warn. `fo info` prints the
+CA and `fo trust` will offer to install it; accepting the warning is the
+documented default. No mkcert dependency.
+
+---
+
+## 8. TypeScript authoring (D3)
+
+Port `pingone-aic-manager`'s `workspace/sandbox/typescript` framework. It
+already solves this exact problem for a Rhino script engine with no module
+system, and every constraint it encodes applies here — IDM on-prem 8.1.1 is the
+same engine as AIC's.
+
+Carried over intact:
+
+- **Build**: `tsc --noEmit` → esbuild bundle (ES2020 IIFE) → Babel
+  `preset-env targets: {ie:"11"}` to ES5 → lint the _generated_ file against
+  IDM's runtime bans. All-or-nothing publication by atomic rename.
+- **The runtime bans**: default parameters, `const` in a loop init, trailing
+  comma in a parameter list, bare `Reflect`, bare `Proxy`.
+- **Never subclass `Error`** — `Reflect` is absent, so Babel's
+  `_wrapNativeSuper` silently breaks `instanceof`. Tagged fault objects plus an
+  ESLint rule that rejects both the subclass and the check.
+- **Typed routing / validation / OpenAPI 3.1** for IDM custom endpoints.
+- **`lib` pinned to what the engine actually provides**, so runtime-impossible
+  code fails to type-check.
+- **Tree-shaking discipline** — no namespace re-exports from `framework/index.ts`.
+
+Changed for on-prem:
+
+- Output goes to `platform/idm/script/` and the endpoint `conf/` JSON, consumed
+  by the config profile — **not** pushed over a tenant API. No sync engine, no
+  conflict detection, no watcher racing a remote. As you noted, on-prem removes
+  the whole class of "someone else overwrote my change" problems that shaped
+  half of `aic`.
+- Managed-object types come from `platform/idm/conf/managed.json` in the repo,
+  generated at build time rather than fetched from a tenant.
+- Adds **AM scripted-node authoring** — same pipeline, different globals
+  (`nodeState`, `sharedState`, `callbacks`) and a different `.d.ts`.
+
+`npm run check` (type-check, lint, test, build) is a Tilt resource, so a type
+error shows up red in the Tilt UI the moment you save.
+
+---
+
+## 9. Phases
+
+Each phase ends with something runnable.
+
+### Phase 0 — spike (gate)
+
+**Nothing else starts until this passes.** One question: does ForgeOps 2026.3
+actually come up on k3d?
+
+- k3d cluster, cert-manager, `helm install identity-platform` with
+  `values-helm-generate-secrets.yaml`.
+- Prove: all pods ready; amster job completes; AM console reachable through
+  Traefik; IDM admin reachable; **a file synced into a running IDM pod's
+  `conf/` hot-reloads** (the §3 assumption).
+- Measure: cold `up` (image pull), warm `up`, peak RSS.
+- Deliverable: a throwaway shell transcript and a go/no-go, plus the exact
+  Traefik/storage overrides needed. **If k3d fails here, D1 flips to minikube**
+  and only `cluster/k3d.ts` changes.
+
+### Phase 1 — `fo up` / `fo down`
+
+Flake, `fo` skeleton, cluster + prereqs + values generation + helm. No Tilt yet.
+`fo doctor`, `fo info`, `fo status`. **A developer can get a stack.**
+
+### Phase 2 — Tilt and the inner loop
+
+Tiltfile, config-image builds, the three-tier loop, live_update.
+**A developer can change the stack.**
+
+### Phase 3 — TypeScript framework
+
+Port the framework, tools, tests. Seed a demo endpoint and a demo AM script.
+Wire `npm run check` into Tilt.
+
+### Phase 4 — round-trip and upgrade
+
+`fo config export am|idm`, `fo config diff`, `fo upgrade` (flake input bump +
+managed-file re-seed + `am-config-upgrader` via the escape hatch).
+
+### Phase 5 — docs and CI
+
+README quick-start, a `platform/` authoring guide, GitHub Actions running
+`fo up` headless plus the TS gates.
+
+---
+
+## 10. Risks
+
+| Risk                                                                                                                            | Severity | Mitigation                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **k3d is not a Ping-validated environment**                                                                                     | High     | Phase 0 gates it. `cluster/k3d.ts` is a single seam, so falling back to minikube is a contained change. Expect to fight: the `fast` StorageClass name (alias local-path), Traefik vs the chart's nginx-flavoured ingress annotations, and DS pods' `readOnlyRootFilesystem`. |
+| **IDM hot-reload assumption is unverified**                                                                                     | High     | Phase 0. Degrades to a pod restart, not a failure.                                                                                                                                                                                                                           |
+| **We own values generation (D2)**                                                                                               | Medium   | Generate types from the pinned chart so a renamed key is a compile error. `fo upgrade` diffs the new chart's `values.yaml` against our generated types and reports removals.                                                                                                 |
+| **~7.5 GB of RAM**                                                                                                              | Medium   | Fine on your 30 GB box. Tight on a 16 GB laptop and needs Docker Desktop's VM raised on macOS. `fo doctor` checks and warns. Trimming the 3 UIs saves only 300 Mi — the cost is AM/IDM/DS and it is not reducible.                                                           |
+| **Licensing**                                                                                                                   | Medium   | Images pull anonymously, but Ping's subscription terms govern _use_. This is a dev/eval stack; the README must say so plainly and must not imply a production path.                                                                                                          |
+| **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | Medium   | Pin hard via the flake input. `fo upgrade` is a first-class command, not an afterthought, precisely because of this rate of change.                                                                                                                                          |
+| **Tilt is a second daemon**                                                                                                     | Low      | `fo up` owns its lifecycle; `fo down` guarantees it's gone. Tilt is never invoked directly by a developer.                                                                                                                                                                   |
+
+---
+
+## 11. Deliberately not doing
+
+- **Production anything.** Ping says the ForgeOps deployment is a sample, not a
+  production deployment; nothing here changes that.
+- **Cloud targets** (GKE/EKS/AKS). If they're wanted later, `cluster/*.ts` is
+  the seam.
+- **A TUI.** `aic` needed one for interactive tenant work; this is a local
+  stack, and the Tilt UI already covers the "what's happening" job.
+- **Hand-authoring AM FBC in TypeScript.** Export round-trip only.
+- **Editing `/etc/hosts`.** Requires sudo, breaks the one-command promise.
+
+---
+
+## 12. Questions for you
+
+1. **Phase 0 gate** — want me to run the spike now? It's ~30 min mostly waiting
+   on image pulls, and it converts the two High risks into facts before you
+   commit to anything.
+   > Dave: Go for it.
+2. **`platform/` seed content** — should the repo ship a worked example (a demo
+   journey, a demo IDM mapping, a demo TS endpoint), or start empty?
+   > Dave: we should have a package repository with optional examples that can be deployed and added to.
+3. **`fo` or another name?** `fo` is short and unclaimed on your box, but it's
+   also two letters and collides easily.
+   > Dave: Yes, add it to our path in the flake so it overrides the users local fo if it needs to. In this project, they'll be typing it all the time. It would be nice if we could set an alias in .envrc somehow in case a user doesn't want to use that name.
+4. **Should `fo up` block on the Tilt UI, or detach and return the URL?**
+   Blocking gives you logs for free; detaching makes `fo up && fo test` scriptable.
+   > Dave: I think block on the Tilt UI.

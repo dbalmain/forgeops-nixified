@@ -1,0 +1,11 @@
+# per-developer state
+/.fo/
+/.direnv/
+/result
+/result-*
+
+# node
+node_modules/
+
+# generated from platform/typescript
+/platform/idm/script/
