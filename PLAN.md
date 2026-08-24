@@ -135,12 +135,18 @@ justifies Tilt.
 AM being slow is acceptable because AM config is normally _exported from the
 console_, not hand-edited — `fo config export am` pulls it back into the repo.
 
-**[OPEN — the single biggest technical assumption in this plan.]** IDM
-hot-reload of `conf/` and `script/` from a `live_update` sync is inferred from
-`OPENIDM_CONFIG_REPO_ENABLED: "false"` plus IDM's Felix file-install defaults.
-It is **not yet verified**. Phase 0 proves or disproves it. If it turns out
-false, the IDM tier degrades to the amster tier (restart the pod, ~45s) and the
-loop is worse but not broken.
+**PROVEN in Phase 0, with a caveat that changes the design.** ForgeOps ships
+`openidm.fileinstall.enabled=false` in `conf/system.properties`, so as
+delivered a synced file is **ignored**. Rebuilding the config profile with the
+watcher enabled makes it work: `conf/` reloads in **< 5 s** and `script/` in
+**~15 s**, both with **zero pod restarts** (the 15 s is
+`javascript.recompile.minimumInterval: 60000` in `conf/script.json`, which the
+dev profile lowers).
+
+So `fo` owns a **dev config profile** that differs from a production profile by
+exactly two properties. That is a better shape than the original assumption: the
+difference is explicit, tiny, reviewable, and self-evidently not for production.
+See `spike/RESULTS.md`.
 
 ### Startup seed vs fast path
 
@@ -526,20 +532,11 @@ source; 8 releases shipped in 2026.
 
 Each phase ends with something runnable.
 
-### Phase 0 — spike (gate)
+### Phase 0 — spike (gate) — **DONE, GO**
 
-**Nothing else starts until this passes.** One question: does ForgeOps 2026.3
-actually come up on k3d?
-
-- k3d cluster, cert-manager, `helm install identity-platform` with
-  `values-helm-generate-secrets.yaml`.
-- Prove: all pods ready; amster job completes; AM console reachable through
-  Traefik; IDM admin reachable; **a file synced into a running IDM pod's
-  `conf/` hot-reloads** (the §3 assumption).
-- Measure: cold `up` (image pull), warm `up`, peak RSS.
-- Deliverable: a throwaway shell transcript and a go/no-go, plus the exact
-  Traefik/storage overrides needed. **If k3d fails here, D1 flips to minikube**
-  and only `cluster/k3d.ts` changes.
+Ran 2026-08-25; full write-up in `spike/RESULTS.md`, working artefacts in
+`spike/`. Cluster create 35 s, cert-manager 26 s, full stack ~7 min, 4.4 GiB
+actual memory. Three findings folded back into this plan (sections 3 and 12).
 
 ### Phase 1 — `fo up` / `fo down`
 
