@@ -1,0 +1,27 @@
+{
+  "//": "Editor support only. Nothing compiles this: Node 24 strips the types and runs the .ts directly, which is why `fo` has no build step and no npm dependencies. `erasableSyntaxOnly` keeps it that way - no enums, no namespaces, no parameter properties.",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["node"],
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["tools/**/*.ts", "fo.config.ts"]
+}

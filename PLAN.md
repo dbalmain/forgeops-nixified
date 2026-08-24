@@ -323,6 +323,35 @@ so we derive the shape from the YAML.
 
 ---
 
+### 6.1 Secrets are seeded, not generated
+
+The chart's Helm-native secret generation (`randAlphaNum <n> | b64enc`) is not
+safe to rely on: PingDS's dictionary validator rejects a meaningful fraction of
+the passwords it produces, and the chart's `lookup`-before-generate makes a
+rejected password permanent. Observed in Phase 1 as `ds-set-passwords` failing
+forever with `Constraint Violation ... contained a word from the server's
+dictionary`.
+
+`fo` therefore derives every password from a single per-env seed in
+`.fo/<env>/seed` and applies the Secrets **before** Helm runs; the chart's
+`lookup` adopts them and generates nothing. Passwords are shaped `LLd-LLd-...`
+— two letters, one digit, hyphen — so the longest run of letters is two and no
+dictionary word can match.
+
+Three properties fall out, and the second is the one developers will notice:
+
+- dictionary-safe by construction, so the deployment always converges
+- **stable**: `fo down && fo up` yields the same credentials, so bookmarks and
+  saved API clients keep working
+- reproducible: one file reproduces an environment elsewhere
+
+The rule for what to seed: **only keys the chart would otherwise generate**.
+`ds-passwords.monitor.pw` is set literally by the chart, and seeding it makes
+`fo` the field manager for a field Helm also writes, which Helm 4's server-side
+apply rejects as a conflict.
+
+---
+
 ## 7. Multiple environments, at zero cost
 
 D5's constraint was "nice, if it adds no complexity for people who don't need
@@ -538,10 +567,34 @@ Ran 2026-08-25; full write-up in `spike/RESULTS.md`, working artefacts in
 `spike/`. Cluster create 35 s, cert-manager 26 s, full stack ~7 min, 4.4 GiB
 actual memory. Three findings folded back into this plan (sections 3 and 12).
 
-### Phase 1 — `fo up` / `fo down`
+### Phase 1 — `fo up` / `fo down` — **DONE**
 
-Flake, `fo` skeleton, cluster + prereqs + values generation + helm. No Tilt yet.
-`fo doctor`, `fo info`, `fo status`. **A developer can get a stack.**
+Flake, `fo` CLI, cluster + prereqs + secret seeding + values generation + Helm,
+plus `doctor`, `status`, `info`, `logs`, `shell`. **A developer can get a
+stack.** Cold `fo up` ~10 min, warm ~2 min, already-running ~17 s, 4.4 GiB.
+
+`fo` has **zero npm dependencies**: Node 24 strips the types and runs the `.ts`
+directly, and Helm parses values files as YAML, so emitting JSON removes the
+only reason a YAML library was needed.
+
+Three things Phase 1 found that Phase 0 could not:
+
+- **Helm 4 waits by default** (`--wait hookOnly`) and the amster Job is a
+  post-install hook, so `helm upgrade` blocks until amster finishes — with a 5
+  minute default timeout that is shorter than a cold start. `fo` raises the
+  timeout and reports pod progress itself rather than sitting silent.
+- **The chart's own password generator is a coin flip.** `randAlphaNum 32`
+  regularly contains a dictionary word, PingDS rejects it outright, and because
+  the chart `lookup`s the existing Secret the bad password is sticky, so
+  `ds-set-passwords` fails identically forever. `fo` now seeds every secret
+  from a per-env seed, with passwords that cannot contain a dictionary word by
+  construction. Section 6.1.
+- **`keystore_create.image` is kubectl, not PingAM** (the PingAM one is
+  `initImage`), exactly like `ssh_keygen`. Blanket-setting `<key>.image.tag`
+  asks for `kubectl:2026.3.0-1849`, which does not exist. `fo` now keys image
+  overrides on (chart key, field) pairs and **verifies at every `fo up` that it
+  has an explicit decision for every `repository:` in the pinned chart**, so a
+  component added upstream fails loudly instead of silently sitting on `latest`.
 
 ### Phase 2 — Tilt and the inner loop
 
