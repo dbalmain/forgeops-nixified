@@ -1,0 +1,56 @@
+platform:
+  ingress:
+    className: traefik
+    hosts:
+      - dev.localhost
+    tls:
+      issuer:
+        name: platform-issuer
+        kind: Issuer
+        create:
+          type: self-signed
+      secret:
+        name: platform-tls
+  storage:
+    storage_class:
+      name: fast
+
+am:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+amster:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+idm:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+ds_idrepo:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+  volumeClaimSpec:
+    storageClassName: fast
+    resources:
+      requests:
+        storage: 10Gi
+ds_cts:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+  volumeClaimSpec:
+    storageClassName: fast
+    resources:
+      requests:
+        storage: 10Gi
+ds_set_passwords:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+admin_ui:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+end_user_ui:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+login_ui:
+  image: { tag: "8.1.1", pullPolicy: IfNotPresent }
+ssh_keygen:
+  # published chart 2026.3.0 rewrites EVERY tag to the release tag, including
+  # third-party images. dockette/ssh only publishes :latest, so the chart is
+  # uninstallable without this override.
+  initImage: { tag: "latest", pullPolicy: IfNotPresent }
+  image: { tag: "1.36.1", pullPolicy: IfNotPresent }
+idm_custom:
+  image:
+    repository: fo-idm-config
+    tag: "test"
+    pullPolicy: IfNotPresent
