@@ -64,26 +64,18 @@ function setImage(v: Values, [key, field]: ImageRef, image: object): void {
   v[key] = { ...parent, [field]: { ...(parent[field] as object), ...image } };
 }
 
+export type ChartImage = { repository: string; tag: string };
+
 /**
- * Assert that every `repository:` in the pinned chart's values.yaml is one we
- * have an explicit decision about. A component ForgeOps adds in a future
- * release would otherwise silently keep the chart's `latest`, which is a
- * different build from the rest of the stack.
+ * Every `<key>.<field>.repository` in a chart's values.yaml, with the tag the
+ * chart defaults to.
  *
  * A regex over the YAML rather than a parse, which is what lets `fo` have no
  * npm dependencies at all.
  */
-export function verifyImageCoverage(chartPath: string): void {
+export function chartImages(chartPath: string): Map<string, ChartImage> {
   const text = readFileSync(join(chartPath, "values.yaml"), "utf8");
-  const known = new Set(
-    [
-      ...PLATFORM_IMAGES,
-      ...PINNED_IMAGES.map((p) => p.ref),
-      ...PROFILE_IMAGES,
-    ].map(([k, f]) => `${k}.${f}`),
-  );
-
-  const found: string[] = [];
+  const found = new Map<string, ChartImage>();
   let top = "";
   let field = "";
   for (const line of text.split("\n")) {
@@ -94,9 +86,56 @@ export function verifyImageCoverage(chartPath: string): void {
     }
     const f = /^ {2}([a-zA-Z_]*[Ii]mage):/.exec(line);
     if (f) field = f[1]!;
-    if (/^ {4}repository:/.test(line) && field) found.push(`${top}.${field}`);
+    if (!field) continue;
+    const repo = /^ {4}repository: *(\S+)/.exec(line);
+    if (repo) found.set(`${top}.${field}`, { repository: repo[1]!, tag: "" });
+    const tag = /^ {4}tag: *(\S+)/.exec(line);
+    const entry = found.get(`${top}.${field}`);
+    if (tag && entry) entry.tag = tag[1]!;
   }
+  return found;
+}
 
+/**
+ * The image refs `fo` actually deploys: the chart's repositories with fo's
+ * tags. `fo upgrade` checks each of these exists in the registry, which is the
+ * check that would have caught `dockette/ssh:2026.3.0-1849` in one command
+ * instead of via a four-step failure cascade.
+ */
+export function resolvedImages(chartPath: string): Array<{ key: string; ref: string }> {
+  const chart = chartImages(chartPath);
+  const out: Array<{ key: string; ref: string }> = [];
+  const push = (key: string, tag: string): void => {
+    const entry = chart.get(key);
+    if (entry) out.push({ key, ref: `${entry.repository}:${tag}` });
+  };
+  for (const [k, f] of PLATFORM_IMAGES) push(`${k}.${f}`, RELEASE.imageTag);
+  for (const { ref: [k, f], tag } of PINNED_IMAGES) push(`${k}.${f}`, tag);
+  for (const [k, f] of PROFILE_IMAGES) {
+    const entry = chart.get(`${k}.${f}`);
+    // Profile images are only the chart default until `fo` builds one locally,
+    // and a locally-built image is not in any registry to check.
+    if (entry) out.push({ key: `${k}.${f}`, ref: `${entry.repository}:${entry.tag}` });
+  }
+  return out;
+}
+
+/**
+ * Assert that every `repository:` in the pinned chart's values.yaml is one we
+ * have an explicit decision about. A component ForgeOps adds in a future
+ * release would otherwise silently keep the chart's `latest`, which is a
+ * different build from the rest of the stack.
+ */
+export function verifyImageCoverage(chartPath: string): void {
+  const known = new Set(
+    [
+      ...PLATFORM_IMAGES,
+      ...PINNED_IMAGES.map((p) => p.ref),
+      ...PROFILE_IMAGES,
+    ].map(([k, f]) => `${k}.${f}`),
+  );
+
+  const found = [...chartImages(chartPath).keys()];
   const unknown = found.filter((f) => !known.has(f));
   if (unknown.length > 0) {
     throw new Error(
@@ -108,9 +147,14 @@ export function verifyImageCoverage(chartPath: string): void {
   }
 }
 
+export type ProfileImages = {
+  idm?: { repository: string; tag: string } | undefined;
+  am?: { repository: string; tag: string } | undefined;
+};
+
 export function buildValues(
   cfg: ResolvedConfig,
-  idmProfileImage?: { repository: string; tag: string },
+  profiles: ProfileImages = {},
 ): Values {
   verifyImageCoverage(cfg.chartPath);
 
@@ -159,10 +203,14 @@ export function buildValues(
     };
   }
 
-  if (idmProfileImage) {
-    setImage(v, ["idm_custom", "image"], {
-      repository: idmProfileImage.repository,
-      tag: idmProfileImage.tag,
+  for (const [key, image] of [
+    ["idm_custom", profiles.idm],
+    ["am_custom", profiles.am],
+  ] as const) {
+    if (!image) continue;
+    setImage(v, [key, "image"], {
+      repository: image.repository,
+      tag: image.tag,
       pullPolicy: "IfNotPresent",
     });
   }

@@ -57,7 +57,8 @@ local_resource(
     trigger_mode = TRIGGER_MODE_AUTO,
 )
 
-# PingAM reads its config at startup, so this rolls the pod. Manual by default:
+# PingAM reads its config at startup, so this rebuilds the am_custom image and
+# rolls the pod. Manual by default:
 # a stray save should not cost two minutes.
 local_resource(
     'am-config',

@@ -30,6 +30,11 @@
             tilt
             jq
             docker-client
+            # `fo config` shells out to both: tar to move config trees in and
+            # out of pods and images, diff to render `fo config diff`. Pinning
+            # them keeps the output identical to what CI sees.
+            gnutar
+            diffutils
           ];
 
           # The platform TypeScript's dependencies, built by nix straight from

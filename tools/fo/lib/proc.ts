@@ -67,6 +67,39 @@ export function stream(
   });
 }
 
+/**
+ * Same as `capture`, but async, so independent calls can overlap.
+ *
+ * Used for the registry probes in `fo upgrade`: fourteen sequential
+ * `docker manifest inspect` calls take minutes, and they have no reason to
+ * wait for each other.
+ */
+export function captureAsync(
+  cmd: string,
+  args: string[],
+  opts: RunOptions = {},
+): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      env: { ...process.env, ...opts.env },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const res = { code: code ?? -1, stdout, stderr };
+      if (res.code !== 0 && !opts.allowFailure) {
+        reject(new Error(`${cmd} ${args.join(" ")} exited ${res.code}\n${stderr || stdout}`));
+      } else {
+        resolve(res);
+      }
+    });
+  });
+}
+
 /** True if the command exists on PATH. */
 export function has(cmd: string): boolean {
   return (

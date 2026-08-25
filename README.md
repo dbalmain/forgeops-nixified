@@ -56,6 +56,15 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo check` | Types, lint, tests, build. |
 | `fo deps` | Re-lock `platform/typescript`'s dependencies after editing its package.json. |
 
+### Round-trip and upgrade
+
+| Command | Does |
+| ------- | ---- |
+| `fo config export idm` | Live IDM config -> `platform/idm/conf/`, minus everything identical to the stock image. |
+| `fo config export am` | Live PingAM FBC -> `platform/am/config/`, through the config upgrader. |
+| `fo config diff [am\|idm]` | Unified diff of live against the repo. Exits non-zero on drift, so CI can use it. |
+| `fo upgrade [--check]` | Bump the pinned ForgeOps tree; report chart changes; verify every pinned image exists. |
+
 ### Packages
 
 Examples are **installable**, not seeded — a fresh checkout is not full of
@@ -125,7 +134,7 @@ platform/typescript/src/endpoints/**  IDM custom endpoints, in TypeScript
 platform/typescript/src/scripts/**    PingAM scripted nodes, in TypeScript
 platform/idm/conf/**                  IDM config JSON      tier 1  — no restart
 platform/amster/config/**             journeys, clients    tier 2  — job re-runs
-platform/am/config/**                 AM file-based config tier 3  — pod rolls
+platform/am/config/**                 AM file-based config tier 3  — image + roll
 ```
 
 `platform/idm/script/` and `platform/idm/conf/endpoint-*.json` are **generated**
@@ -137,8 +146,7 @@ Run `fo dev`, save a file, and the right tier fires on its own.
 you leave out of a JSON file reverts to the schema default, which is often
 `null` — so a sparse OAuth2 client will work on first import and break on the
 second, once your file has overwritten the defaults AM filled in. Spell out
-every field you depend on. `fo config export` (Phase 4) is the reliable way to
-get a complete file.
+every field you depend on, or let `fo config export am` write a complete one.
 
 One demo is seeded so the loop is provable on a fresh clone —
 `src/endpoints/hello.ts`, a typed IDM endpoint. Everything else is a package;
@@ -195,6 +203,109 @@ package.json names something the lock lacks (so `nix develop` no longer works),
 and npm exits non-zero on its allow-scripts warning even when the lock was
 written correctly.
 
+## Round-tripping config
+
+Everything above pushes the repo at the stack. `fo config` is the other
+direction: it pulls what a running stack actually has back into `platform/`,
+which is how a change made in the admin UI or over REST becomes something you
+can commit.
+
+```sh
+fo config diff            # what the live stack has that the repo does not
+fo config export idm      # adopt it
+fo config export am
+```
+
+**Only the delta is written.** PingIDM ships 52 config files; exporting all of
+them would hand you 52 files to review on every upgrade, 50 of which you never
+touched. So `fo` extracts the stock image's `conf/` once (cached under
+`.fo/baseline/`), and writes only what differs. PingAM needs no baseline — its
+`export.sh` already tars only the config the instance has written.
+
+Two files are never exported: `system.properties` and `script.json`. `fo` owns
+those in the dev config profile (file-install on, 1s script recompile), and an
+exported copy would win over the generated one and silently pin the inner
+loop's settings.
+
+`managed.json` is the exception in the other direction: it is exported even
+when it matches the stock image, because it is the input to
+[managed-object types](#managed-object-types).
+
+**The PingAM export runs the config upgrader**, in a container, twice — once
+for the release's version rules and once for ForgeOps' `placeholders.groovy`,
+which puts `%BASE_DN%`-style placeholders back where the live config holds
+concrete values. One invocation applies one rule set; skipping the second bakes
+this environment's DNs into the repo. `--no-upgrade` skips both, and says so.
+
+**PingAM writes FBC files on its own.** Fourteen social-identity-provider
+entries appeared minutes after a boot nobody had touched. They hold `_id` and
+`_type` and no settings, so `fo config diff am` reports them and does not count
+them as drift — but they are still exported, because a `DataStoreDecision` node
+has exactly the same shape and there its existence *is* the configuration.
+Filtering them out of the export deletes nodes from journeys; that was tried
+and reverted.
+
+Once `platform/am/config/` exists, `fo up` builds it into an `am_custom` image
+and PingAM boots from it. That is the round trip closing: **export, deploy,
+export again gives byte-identical files** (verified 2026-08-25 — a journey and
+a scripted node survived a full pod replacement onto empty volumes with
+`platform/amster/config` empty, so nothing but the FBC could have carried
+them).
+
+`platform/am/config/` is **not committed in this repo**, deliberately: a fresh
+clone should get stock PingAM, not a snapshot of somebody else's. In your own
+project it is exactly the thing to commit.
+
+### Managed-object types
+
+`fo build` generates `platform/typescript/src/generated/managed.ts` from
+`platform/idm/conf/managed.json` — one interface per managed object, keyed into
+the `ManagedObjects` seam the framework declares empty. That is what makes
+
+```ts
+const user = openidm.read("managed/user/" + id, null, ["userName", "mail"]);
+```
+
+return a typed object with checked field names rather than an index-only
+`CrestResource`.
+
+Optional properties are typed `T | null`, not `T`. PingIDM returns JSON `null`
+for a property that has been cleared, so `description?: string` type-checks a
+guard that then throws — a real defect found against a live stack, and the
+reason the generated types look pessimistic.
+
+The generated file is committed, so a fresh clone type-checks without a
+cluster, and a test fails if it drifts from `managed.json`.
+
+## Upgrading
+
+```sh
+fo upgrade --check    # verify the current pin, change nothing
+fo upgrade            # bump forgeops-src, then verify
+```
+
+`fo upgrade` answers the two questions that decide whether a new pin will
+install at all:
+
+- **Did the chart gain an image key `fo` has no decision about?** Such a key
+  keeps the chart's `latest`, which is a different build from the rest of the
+  stack. `fo` fails loudly instead.
+- **Does every image `fo` pins actually exist?** Seventeen registry probes, run
+  concurrently. The Phase 0 spike lost an afternoon to
+  `dockette/ssh:2026.3.0-1849` not existing, a failure that surfaced four steps
+  later as PingAM stuck in `FailedMount`. This is that check.
+
+When the pin actually moves it also diffs the two charts and names what
+changed. Pointed at 2026.2 for a test it reported, correctly, that
+`keystore_create.image` and `ds_snapshot.image` use a different repository
+there, that `ssh_keygen` does not exist, and that the `pingone` and
+`ssh_keygen` top-level value keys are absent — which is the whole list of
+things that would have made `fo`'s generated values silently wrong.
+
+It does **not** update `RELEASE` in `tools/fo/config.ts` — the image tag is set
+by hand because the chart and the docs disagree about it (see PLAN.md) — so it
+says so and leaves it to you.
+
 ## Passwords are stable
 
 Every password is derived from a per-environment seed in `.fo/<env>/seed`
@@ -248,26 +359,33 @@ platform/            what you author: IDM conf and scripts, AM config, amster
 spike/               Phase 0 evidence and the working reference artefacts
 PLAN.md              the design, decisions and roadmap
 .fo/<env>/           gitignored per-env state: seed, kubeconfig, values.json
+.fo/baseline/        gitignored: the stock image config `fo config` diffs against
 ```
 
 ## Status
 
-Phases 1–3.5 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
-it, **write typed code against it**, and **install examples**. Still to come:
-config round-tripping and `fo upgrade` (Phase 4), and the log console
-(Phase 4.5).
+Phases 1–4 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
+it, **write typed code against it**, **install examples**, and **pull live
+config back into the repo**. Still to come: the log console (Phase 4.5), docs
+and CI (Phase 5).
 
-Two caveats worth stating plainly:
+Caveats worth stating plainly:
 
-- Tier 3 is verified as *"roll the PingAM pod"*, but rebuilding an `am-config`
-  image from `platform/am/config/` is unexercised, because nothing produces
-  correctly-shaped PingAM file-based config until `fo config export am` lands
-  in Phase 4.
-- Managed-object types generated from `managed.json` are **not** built. They
-  need `managed.json` in the repo, which is `fo config export idm` in Phase 4.
-  Until then, `openidm.query`'s typed three-argument field projection is
-  unusable and you pass `_fields` as a string instead.
+- **This is a dev and evaluation stack.** Images pull anonymously, but Ping's
+  subscription terms govern use. Nothing here is a production path.
+- `fo upgrade` does not re-seed managed files (`framework/`, `tools/`,
+  the tsconfigs). It cannot: `fo` and the workspace are the same tree here, so
+  there is nothing to copy from. That becomes real with `fo init`, which would
+  create a workspace separate from the tool; the content-hash machinery it
+  needs already exists in `.fo/packages.lock`.
+- `fo upgrade` does not set `RELEASE` in `tools/fo/config.ts`. The image tag is
+  chosen by hand because the chart (`2026.3.0-1849`) and the docs (`8.1.1`)
+  name different builds, and `am-config-upgrader` is published under the second
+  scheme and not the first. It reports and leaves the choice to you.
 - There is no CSV-feed example. The PingIDM image ships only a **cloud** CSV
   connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
   local-file mode), so an offline CSV example would need a cloud bucket or a
   Groovy scripted connector.
+- `tsconfig.am.json` inherits `lib` from the PingIDM program. That list has not
+  been verified against PingAM's script engine, so it may permit a method AM
+  does not have.

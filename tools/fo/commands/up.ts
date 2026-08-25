@@ -4,7 +4,7 @@ import { sleep, stream } from "../lib/proc.ts";
 import { detail, die, heading, ok, step } from "../lib/ui.ts";
 import { ensureCluster } from "../cluster/k3d.ts";
 import { ensureCertManager, ensureNamespace, ensureStorageClass } from "../prereqs.ts";
-import { buildIdmProfile } from "../profile.ts";
+import { buildAmProfile, buildIdmProfile } from "../profile.ts";
 import { ensureSecrets } from "../secrets.ts";
 import { buildValues, renderValues } from "../values.ts";
 import { doctor } from "./doctor.ts";
@@ -38,11 +38,19 @@ export async function up(
   const idmImage = cfg.components.includes("idm")
     ? await buildIdmProfile(cfg)
     : undefined;
+  // Only built when platform/am/config exists, which it does not until
+  // `fo config export am` has run. Until then PingAM boots from its own image.
+  const amImage = cfg.components.includes("am")
+    ? await buildAmProfile(cfg)
+    : undefined;
 
   step("Generating Helm values");
   mkdirSync(cfg.stateDir, { recursive: true });
   const valuesPath = join(cfg.stateDir, "values.json");
-  writeFileSync(valuesPath, renderValues(buildValues(cfg, idmImage)));
+  writeFileSync(
+    valuesPath,
+    renderValues(buildValues(cfg, { idm: idmImage, am: amImage })),
+  );
   detail(valuesPath);
 
   step(`Deploying identity-platform`);

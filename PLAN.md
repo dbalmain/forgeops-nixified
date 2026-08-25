@@ -769,10 +769,90 @@ The last three are the same lesson in three costumes: a declaration that looks
 right is not evidence, and only the second run — or the positive control —
 finds it. Every example now ships a test for the coupling its build cannot see.
 
-### Phase 4 — round-trip and upgrade
+### Phase 4 — round-trip and upgrade — **DONE**
 
-`fo config export am|idm`, `fo config diff`, `fo upgrade` (flake input bump +
-managed-file re-seed + `am-config-upgrader` via the escape hatch).
+`fo config export am|idm`, `fo config diff`, `fo upgrade`, managed-object type
+generation, and the PingAM config-profile image. **A change made in the running
+stack can be pulled back into the repo, and the pin can move.**
+
+- **The PingAM round trip is closed and proven.** Export 218 FBC files, build
+  them into an `am_custom` image, roll PingAM onto fresh empty volumes, export
+  again: byte-identical. The control that makes this mean something is that
+  `platform/amster/config` was **empty**, so the `risk-login` journey, its
+  scripted node and its five child nodes could only have come from the FBC —
+  amster had nothing to re-import. This also closes the Phase 3 gap: tier 3 was
+  only ever verified as "roll the pod".
+- **The PingIDM round trip is proven the same way**: a config object created
+  over REST appeared on disk, `fo config diff` reported it, `fo config export`
+  adopted it, and a second diff was clean.
+- **Only the delta is exported.** PingIDM's stock `conf/` is extracted from the
+  image once and cached; a full export would mean adopting 52 files nobody
+  edited and reviewing them on every upgrade. PingAM needs no baseline because
+  `export.sh` already tars only what the instance wrote.
+- **`fo upgrade` verifies rather than hopes.** Seventeen concurrent registry
+  probes plus the chart diff. Pointed at 2026.2 as a test, it correctly named
+  every difference that would have broken generated values: two changed image
+  repositories, `ssh_keygen` absent, `pingone` and `ssh_keygen` top-level keys
+  gone.
+- **Managed-object types are generated** from the exported `managed.json` into
+  the `ManagedObjects` seam `framework/idm-globals.d.ts` had been declaring
+  empty since Phase 3, so `openidm.read("managed/user/…")` finally returns a
+  typed object with checked field names.
+
+What Phase 4 found:
+
+- **`am-config-upgrader` is published under the PRODUCT version, not the
+  release tag.** `am-config-upgrader:8.1.1` exists; `:2026.3.0-1849` does not.
+  Every other image is the other way round. This is the same two-tag-schemes
+  hazard as the Phase 0 spike, pointing the opposite way, and it is why
+  `fo upgrade` now probes the registry for every ref it pins.
+- **PingAM writes FBC files by itself.** Fourteen social-identity-provider
+  entries materialised minutes after a boot nobody had touched, so
+  `fo config diff am` reported drift that no person caused.
+- **…and filtering them out is wrong.** Those entries hold `_id` and `_type`
+  and no settings, which looks like a safe thing to drop — until you notice a
+  `DataStoreDecision` node has exactly the same shape, because it has no
+  settings either and its EXISTENCE is the configuration. The filter deleted
+  five nodes from the risk-login journey. Reverted: the export keeps
+  everything, and the classification is used only to decide what `diff` counts
+  as drift. Found by reading the list of dropped files, not by any gate.
+- **`fo` itself was never type-checked.** Node 24 strips types and runs the
+  `.ts` directly, so nothing compiled `tools/fo` and an error surfaced only
+  when the broken line ran. `fo check` now type-checks it, and the first run
+  found a latent `exactOptionalPropertyTypes` violation in the argument parser
+  that predates this phase. It needed a root `package.json` (`type: module`) —
+  Node infers ESM from the syntax, tsc does not.
+- **`system.properties` and `script.json` must never be exported.** The dev
+  config profile generates both; an exported copy is copied over the generated
+  one and silently freezes the inner loop's settings, ignoring `fo.config.ts`.
+- **Tier-1 sync is additive, and a roll is the undo.** Three config files from
+  packages uninstalled in Phase 3.5 were still in the pod; `fo config diff`
+  found them. `fo sync` never deletes, so `fo restart` is what returns a pod to
+  its declared state.
+
+### Deviation: `fo upgrade` does not re-seed managed files
+
+Section 4 promised `framework/` and `tools/` would be rewritten by
+`fo upgrade`, content-hashed. They are not, because in this repo **`fo` and the
+workspace are the same tree** — there is nothing to copy from, and building the
+code path would mean shipping something nothing exercises, which is the same
+reason Phase 3 deferred the type generator.
+
+It becomes real with `fo init`, which would create a workspace separate from
+the tool. The content-hash machinery it needs already exists and is proven:
+`.fo/packages.lock` and `fo add|remove` (Phase 3.5).
+
+What was done instead is the part that has a consumer today: every managed file
+that still claimed to be "regenerated by `aic workspace update`" — a tool that
+does not exist here — now names `fo upgrade`, and the chart-derived checks
+`fo upgrade` runs are the mitigation section 12 promised for D2.
+
+### Deviation: `platform/am/config` is not committed
+
+A fresh clone should get stock PingAM, not a snapshot of the machine that ran
+the export — the same reasoning that keeps `platform/` free of examples. The
+directory is produced on demand by `fo config export am`; in a real project it
+is exactly the thing to commit.
 
 ### Phase 4.5 — the log console
 
@@ -794,10 +874,10 @@ README quick-start, a `platform/` authoring guide, GitHub Actions running
 | ~~IDM hot-reload is unverified~~ | **Retired, with a change** | Proven, but only after the dev profile sets `openidm.fileinstall.enabled=true`; ForgeOps ships it `false`. See section 3. |
 | **Published chart 2026.3.0 will not install unmodified** | Medium | Its publish script rewrites every `tag:` to the release tag including third-party images, and `dockette/ssh:2026.3.0-1849` does not exist. The failure cascade (ssh-keygen -> no amster secret -> AM `FailedMount`) points nowhere near the cause. `fo` pins `ssh_keygen.initImage.tag` and `ssh_keygen.image.tag` explicitly. Vindicates D2. |
 | **Two incompatible image tag schemes** | Medium | The docs say `8.1.1`; the chart pins `2026.3.0-1849`; they are different builds with different digests. `fo` pins the chart's scheme - that is the combination ForgeOps tested. |
-| **We own values generation (D2)**                                                                                               | Medium   | Generate types from the pinned chart so a renamed key is a compile error. `fo upgrade` diffs the new chart's `values.yaml` against our generated types and reports removals.                                                                                                 |
+| ~~We own values generation (D2)~~ | **Mitigated** | `fo upgrade` diffs the old and new chart `values.yaml`, naming changed image repositories, added/removed image keys and removed top-level keys; `verifyImageCoverage` then fails on any image key `fo` has no decision about. Verified against 2026.2, which reported all five real differences. |
 | RAM | **Low** (was Medium) | Measured **4.4 GiB actual** for the whole stack, against 6.5 GiB of requests. A 16 GB laptop is comfortable, not marginal. macOS still needs Docker Desktop's VM raised. `fo doctor` checks and warns. |
 | **Licensing**                                                                                                                   | Medium   | Images pull anonymously, but Ping's subscription terms govern _use_. This is a dev/eval stack; the README must say so plainly and must not imply a production path.                                                                                                          |
-| **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | Medium   | Pin hard via the flake input. `fo upgrade` is a first-class command, not an afterthought, precisely because of this rate of change.                                                                                                                                          |
+| **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | **Low** (was Medium) | Pinned hard via the flake input, and `fo upgrade` now bumps it, diffs the chart and probes all seventeen pinned image refs. Residual: `RELEASE.imageTag` is still chosen by hand, because the chart and the docs name different builds and `am-config-upgrader` follows the docs' scheme rather than the chart's. |
 | **Tilt is a second daemon**                                                                                                     | ~~Low~~ **Gone** | Resolved in Phase 2 rather than mitigated: `fo up` no longer starts Tilt at all. Tilt runs only for as long as a developer keeps `fo dev` in the foreground, and `fo watch` does the same job without it.                                                                     |
 
 ---

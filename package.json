@@ -1,0 +1,6 @@
+{
+  "//": "Not an npm project: there are no dependencies and `npm install` is never run here. This file exists so that Node and TypeScript agree that tools/fo/*.ts are ES modules. Node infers it from the syntax; tsc does not, and without this every import in `fo` is a TS1295 error. Dependencies live in platform/typescript and come from nix.",
+  "name": "forgeops-nixified",
+  "private": true,
+  "type": "module"
+}

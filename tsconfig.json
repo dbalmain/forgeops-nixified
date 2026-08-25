@@ -1,5 +1,5 @@
 {
-  "//": "Editor support only. Nothing compiles this: Node 24 strips the types and runs the .ts directly, which is why `fo` has no build step and no npm dependencies. `erasableSyntaxOnly` keeps it that way - no enums, no namespaces, no parameter properties.",
+  "//": "Editor support only. Nothing compiles this: Node 24 strips the types and runs the .ts directly, which is why `fo` has no build step and no npm dependencies. `typeRoots` points into platform/typescript because the nix-built node_modules the devShell links there is the only one in the repo, and @types/node is the single thing `fo` needs from it. `erasableSyntaxOnly` keeps it that way - no enums, no namespaces, no parameter properties.",
   "compilerOptions": {
     "lib": ["ES2024"],
     "target": "ES2023",
@@ -12,6 +12,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "types": ["node"],
+    "typeRoots": ["platform/typescript/node_modules/@types"],
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,

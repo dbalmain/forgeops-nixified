@@ -16,6 +16,13 @@ import { dev } from "./commands/dev.ts";
 import { build, check } from "./commands/build.ts";
 import { deps } from "./commands/deps.ts";
 import { add, list, remove } from "./commands/pkg.ts";
+import {
+  configDiff,
+  configExport,
+  EXPORT_COMPONENTS,
+  type ExportComponent,
+} from "./commands/config.ts";
+import { upgrade } from "./commands/upgrade.ts";
 
 const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
@@ -41,6 +48,11 @@ ${bold("TypeScript")}
   fo check [--env NAME]                    types, lint, tests, build
   fo deps                                  re-lock platform/typescript deps
 
+${bold("Round-trip and upgrade")}
+  fo config export am|idm                  live config -> platform/, minus the stock defaults
+  fo config diff [am|idm]                  what the live stack has that the repo does not
+  fo upgrade [--check]                     bump forgeops-src; verify the chart and every image
+
 ${bold("Packages")}
   fo list                                  installed and available examples
   fo add NAME [--force]                    install an example into platform/
@@ -51,11 +63,16 @@ ${dim("--env defaults to `dev`; every env is a namespace in one shared k3d clust
 `;
 
 type Flags = {
-  env?: string;
+  // `| undefined` explicitly, not just `?`: exactOptionalPropertyTypes means
+  // an optional property may be ABSENT but not assigned undefined, and
+  // `--env` with nothing after it assigns exactly that.
+  env?: string | undefined;
   json: boolean;
   destroy: boolean;
   noTilt: boolean;
   force: boolean;
+  check: boolean;
+  noUpgrade: boolean;
   timeout: number;
   rest: string[];
   passthrough: string[];
@@ -67,6 +84,8 @@ function parse(argv: string[]): Flags {
     destroy: false,
     noTilt: false,
     force: false,
+    check: false,
+    noUpgrade: false,
     timeout: 900,
     rest: [],
     passthrough: [],
@@ -89,6 +108,10 @@ function parse(argv: string[]): Flags {
       f.noTilt = true;
     } else if (a === "--force") {
       f.force = true;
+    } else if (a === "--check") {
+      f.check = true;
+    } else if (a === "--no-upgrade") {
+      f.noUpgrade = true;
     } else if (a === "--timeout") {
       f.timeout = Number(argv[++i]);
     } else {
@@ -164,6 +187,30 @@ async function main(): Promise<void> {
     case "remove":
       remove(cfg, args[0]);
       break;
+    case "config": {
+      const action = args[0];
+      const rest = args.slice(1);
+      const parseComponent = (name: string | undefined): ExportComponent => {
+        if (name !== "am" && name !== "idm") {
+          die(`fo config ${action} takes "am" or "idm", not "${name ?? ""}"`);
+        }
+        return name;
+      };
+      if (action === "export") {
+        configExport(cfg, parseComponent(rest[0]), { upgrade: !flags.noUpgrade });
+      } else if (action === "diff") {
+        const which = rest[0] ? [parseComponent(rest[0])] : EXPORT_COMPONENTS;
+        if (!configDiff(cfg, which, { upgrade: !flags.noUpgrade })) process.exitCode = 1;
+      } else {
+        die(`fo config takes "export" or "diff", not "${action ?? ""}"`);
+      }
+      break;
+    }
+    case "upgrade": {
+      const clean = await upgrade(cfg, { check: flags.check });
+      if (!clean) process.exitCode = 1;
+      break;
+    }
     case "amster":
       await runAmster(cfg, { timeoutSeconds: flags.timeout });
       break;

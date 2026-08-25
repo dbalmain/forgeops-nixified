@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 import { capture } from "./lib/proc.ts";
 import { detail, ok, step } from "./lib/ui.ts";
@@ -133,4 +141,55 @@ export async function buildIdmProfile(
   await importImage(cfg.clusterName, image);
   ok(`${image}`);
   return { repository: IDM_PROFILE_IMAGE, tag };
+}
+
+export const AM_PROFILE_IMAGE = "fo-am-config";
+
+/**
+ * PingAM's config profile, built from `platform/am/config` - the tree
+ * `fo config export am` writes.
+ *
+ * The chart's `am_custom` image is a plain container whose `/config/config` an
+ * init container copies onto an emptyDir before PingAM boots (see the chart's
+ * `custom-vol-init.sh`), exactly like IDM's profile. It defaults to
+ * `busybox:musl`, which has no `/config`, so a stock deploy takes the image's
+ * own config.
+ *
+ * Returns undefined when there is nothing to ship, so `fo up` leaves
+ * `am_custom` at the chart's default rather than deploying an empty profile -
+ * an empty `/config/config` would still count as "custom FBC found" and PingAM
+ * would boot with no services at all.
+ */
+export async function buildAmProfile(
+  cfg: ResolvedConfig,
+): Promise<BuiltImage | undefined> {
+  const source = join(cfg.root, "platform", "am", "config");
+  if (!existsSync(source) || countFiles(source) === 0) return undefined;
+
+  step("Building PingAM config profile");
+  const build = join(cfg.stateDir, "am-profile");
+  rmSync(build, { recursive: true, force: true });
+  mkdirSync(join(build, "config"), { recursive: true });
+  const n = copyTree(source, join(build, "config"));
+  detail(`${n} FBC files from platform/am/config`);
+
+  writeFileSync(
+    join(build, "Dockerfile"),
+    ["FROM busybox:musl", "RUN mkdir /config", "COPY config /config/config", ""].join("\n"),
+  );
+
+  const tag = hashTree(join(build, "config"));
+  const image = `${AM_PROFILE_IMAGE}:${tag}`;
+  capture("docker", ["build", "-q", "-t", image, build]);
+  await importImage(cfg.clusterName, image);
+  ok(`${image}`);
+  return { repository: AM_PROFILE_IMAGE, tag };
+}
+
+function countFiles(dir: string): number {
+  let n = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    n += e.isDirectory() ? countFiles(join(dir, e.name)) : 1;
+  }
+  return n;
 }

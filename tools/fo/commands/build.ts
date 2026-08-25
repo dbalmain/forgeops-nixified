@@ -56,6 +56,7 @@ export async function build(cfg: ResolvedConfig): Promise<void> {
 
 /** Everything the build does, plus lint and the test suite. */
 export async function check(cfg: ResolvedConfig): Promise<void> {
+  await checkFo(cfg);
   if (!existsSync(tsRoot(cfg))) {
     detail("no platform/typescript; nothing to check");
     return;
@@ -63,4 +64,21 @@ export async function check(cfg: ResolvedConfig): Promise<void> {
   assertStoreModules(cfg);
   step("Checking platform TypeScript (types, lint, tests, build)");
   await npm(cfg, "check");
+}
+
+/**
+ * Type-check `fo` itself.
+ *
+ * Node 24 strips types and runs the .ts sources directly, so nothing compiles
+ * `tools/fo` and a type error in it surfaces only when the broken line runs -
+ * possibly ten minutes into `fo up`. This is the gate that stops that.
+ */
+export async function checkFo(cfg: ResolvedConfig): Promise<void> {
+  assertStoreModules(cfg);
+  step("Type-checking fo");
+  await stream(
+    join(tsRoot(cfg), "node_modules", ".bin", "tsc"),
+    ["--noEmit", "-p", join(cfg.root, "tsconfig.json")],
+    { cwd: cfg.root },
+  );
 }

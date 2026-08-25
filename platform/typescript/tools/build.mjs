@@ -8,7 +8,7 @@
 // from `assumptions` instead.
 //
 // NOTHING IS EMITTED UNLESS EVERY STEP SUCCEEDS FOR EVERY ENDPOINT. A broken
-// build must not leave a half-updated `.cjs` for `aic script watch` to push.
+// build must not leave a half-updated bundle for `fo sync` to push.
 //
 // ON-PREM: output goes to platform/idm/script/ and platform/idm/conf/, which
 // the config profile and `fo sync` consume. There is no tenant, so there is no
@@ -35,6 +35,7 @@ import * as babel from "@babel/core";
 import * as esbuild from "esbuild";
 
 import { findRuntimeBanViolations } from "./idm-runtime-bans.mjs";
+import { generateManagedTypes } from "./managed-types.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(projectRoot, "..");
@@ -56,6 +57,12 @@ const confDir = join(workspaceRoot, "idm", "conf");
 const openapiDir = join(projectRoot, "openapi");
 const distDir = join(projectRoot, "dist");
 const manifestPath = join(projectRoot, ".fo-ts-manifest.json");
+// Types for PingIDM's managed objects, derived from the deployment's own
+// managed.json rather than hard-coded. `fo config export idm` is what puts
+// that file in the repo; until it has run there is nothing to generate from.
+const managedJsonPath = join(workspaceRoot, "idm", "conf", "managed.json");
+const generatedDir = join(projectRoot, "src", "generated");
+const managedTypesPath = join(generatedDir, "managed.ts");
 
 /** The IIFE binding the emitted file's final expression statement calls. */
 const GLOBAL_NAME = "__foMain";
@@ -230,7 +237,7 @@ async function buildEndpoint(entry) {
         definition.name +
         '" must match the file name "' +
         fileName +
-        '" — the file name is what `aic script watch` pushes'
+        '" — the file name is what `fo sync` pushes'
     );
   }
   const iife = await bundle(entry, "iife", GLOBAL_NAME);
@@ -582,7 +589,33 @@ function openApiOutputs(built, toOpenApi) {
   });
 }
 
+/**
+ * Regenerate src/generated/managed.ts, if there is a managed.json to read.
+ *
+ * Runs BEFORE the type-check, because the endpoints being checked import from
+ * it. An ABSENT managed.json leaves any existing generated file alone: the
+ * file is committed so a fresh clone type-checks without a cluster, and
+ * deleting it because nobody has exported yet would break exactly that.
+ */
+function generateManaged() {
+  if (!existsSync(managedJsonPath)) {
+    return;
+  }
+  const managed = JSON.parse(readFileSync(managedJsonPath, "utf8"));
+  const content = generateManagedTypes(managed);
+  if (existsSync(managedTypesPath) && readFileSync(managedTypesPath, "utf8") === content) {
+    return;
+  }
+  mkdirSync(generatedDir, { recursive: true });
+  atomicWrite(managedTypesPath, content);
+  const count = Array.isArray(managed.objects) ? managed.objects.length : 0;
+  console.log(
+    "generated src/generated/managed.ts (" + count + " managed objects)"
+  );
+}
+
 async function run() {
+  generateManaged();
   // Cleared every generation, not just on one-shot builds: `readDefinition`
   // writes one `.mjs` per endpoint here, so a long `--watch` session otherwise
   // accumulates a file per endpoint it has ever seen, including renamed and

@@ -66,6 +66,9 @@ const TIERS: Tier[] = [
     run: (cfg) => runAmster(cfg),
   },
   {
+    // `restart` rebuilds the am_custom image first when this directory has
+    // content: a bare rollout re-runs the init container against the OLD
+    // image and silently applies nothing.
     name: "am-config",
     dir: ["platform", "am", "config"],
     budget: "~2min",
