@@ -780,12 +780,13 @@ repo — it lives in the PingIDM image, and getting it into `platform/` is
 shipping a code path nothing exercises, so it moves to Phase 4 where its input
 arrives.
 
-### Known gap: the AM program's `lib`
+### ~~Known gap: the AM program's `lib`~~ — closed 2026-08-26
 
-`tsconfig.am.json` inherits `lib` from the endpoint program, where it was
-pinned to **PingIDM's** script-bindings matrix. That list has not been verified
-against PingAM's engine, so it may permit a method AM does not have. Recorded
-in the file itself, and the demo script sticks to what ES5 guarantees.
+`tsconfig.am.json` inherited `lib` from the endpoint program, where it was
+pinned to **PingIDM's** script-bindings matrix, and it had never been checked
+against PingAM's engine. Closed by probing both engines on a running stack
+rather than by reading documentation — see
+[spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md) and Phase 6 below.
 
 ### Phase 3.5 — the package repository — **DONE**
 
@@ -1040,6 +1041,49 @@ login now traces across `am`, `ds-idrepo` and `ds-cts`, showing the identity
 search and the CTS session-token write. Under upstream's filter those three
 lines do not exist.
 
+### Phase 6 — verify the script engines — **DONE**
+
+The last correctness gap reachable from a laptop. `fo build` runs
+`@babel/preset-env` with `useBuiltIns: false`, so nothing is polyfilled: `lib`
+is a load-bearing claim about the engine, and declaring a builtin it lacks
+produces code that type-checks, lints, builds, deploys and throws in the
+middle of somebody's login.
+
+Two probes — a PingAM scripted decision node and a PingIDM custom endpoint —
+reported which builtins actually exist. Result: **both are the same Rhino
+build and agreed on all 95 shared probes**, which is what makes one shared
+`lib` sound.
+
+- **The pinned `lib` was correct.** Every entry already there is genuinely
+  present. No change needed — the outcome worth having verified rather than
+  assumed.
+- **It was too narrow.** Added `ES2017.String`, `ES2018.Promise`,
+  `ES2019.Object` and `ES2019.String`, each fully present.
+- **`ES2017.Object` is a partial match** — `entries` and `values` exist,
+  `getOwnPropertyDescriptors` does not — so those two are declared member by
+  member in `framework/engine-lib.d.ts` instead.
+- `tests/engine-lib.test.mjs` cross-checks both tsconfigs against the recorded
+  probe data by reading TypeScript's own lib `.d.ts` files, so adding an entry
+  that declares an absent builtin fails the build. Both of its failure modes
+  were exercised before it was committed.
+
+**A probe that could not observe the answer.** The first round tested array
+iterability as `Array.prototype[String(Symbol.iterator)]`. `String(symbol)`
+yields a key nothing has, so it reported arrays as non-iterable on an engine
+where they are iterable — and the conclusion would have been to *narrow* the
+lib on false evidence. Indexing with the symbol itself gives the true answer.
+
+### Bug found on the way: `fo amster` failed on a first install
+
+Amster walks the config tree without knowing which entity types depend on
+which, and sorts `ScriptedDecision` before `Scripts` — so a scripted decision
+node is imported before the script it references and PingAM rejects it.
+`fo add example-risk-login && fo build && fo amster`, the exact sequence that
+package's README prescribes, failed every time on a stack that did not already
+have the script. Reproduced deterministically, and fixed with a **targeted**
+second pass: a blanket retry would double the time every genuinely broken
+import takes to fail.
+
 ### Known gap: the GitHub runner environment
 
 What has not been exercised is the runner itself. Action versions are pinned
@@ -1056,7 +1100,7 @@ runner's resolver, which is a CI crutch and says so.
 
 | Risk                                                                                                                            | Severity | Mitigation                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ~~k3d is not a Ping-validated environment~~ | **Retired** | Phase 0 proved it: all pods up, Traefik serves the ingress on plain `https://dev.localhost/am/` with no `/etc/hosts` and no tunnel, and local-path aliased to `fast` satisfies DS. Residual: k3d 5.9.0 defaults to k3s v1.32.5 while ForgeOps validates kubectl 1.36.1 - pin a newer k3s and re-verify. |
+| ~~k3d is not a Ping-validated environment~~ | **Retired** | Phase 0 proved it: all pods up, Traefik serves the ingress on plain `https://dev.localhost/am/` with no `/etc/hosts` and no tunnel, and local-path aliased to `fast` satisfies DS. Residual closed: `fo` pins `rancher/k3s:v1.34.4-k3s1` explicitly (tools/fo/cluster/k3d.ts). |
 | ~~IDM hot-reload is unverified~~ | **Retired, with a change** | Proven, but only after the dev profile sets `openidm.fileinstall.enabled=true`; ForgeOps ships it `false`. See section 3. |
 | **Published chart 2026.3.0 will not install unmodified** | Medium | Its publish script rewrites every `tag:` to the release tag including third-party images, and `dockette/ssh:2026.3.0-1849` does not exist. The failure cascade (ssh-keygen -> no amster secret -> AM `FailedMount`) points nowhere near the cause. `fo` pins `ssh_keygen.initImage.tag` and `ssh_keygen.image.tag` explicitly. Vindicates D2. |
 | **Two incompatible image tag schemes** | Medium | The docs say `8.1.1`; the chart pins `2026.3.0-1849`; they are different builds with different digests. `fo` pins the chart's scheme - that is the combination ForgeOps tested. |

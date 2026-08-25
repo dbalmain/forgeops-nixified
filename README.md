@@ -187,14 +187,23 @@ to push.
 What the types buy you: handler parameters are inferred from the validators, so
 changing `v.integer({ max: 100 })` breaks the handler that relied on it at
 compile time. The `lib` is pinned to what the script engine actually provides —
-no `Proxy`, no `Reflect`, no generators — so runtime-impossible code fails to
+no `Proxy`, no `Reflect`, no `Array#flat` — so runtime-impossible code fails to
 type-check. And you never subclass `Error`: `Reflect` is absent, which makes
 Babel's `_wrapNativeSuper` break `instanceof` silently. Use the tagged faults
 (`badRequest`, `notFound`, …) instead; a lint rule rejects the alternative.
 
+That `lib` is not guesswork. Both engines were probed on a running stack —
+95 builtins, a PingAM scripted decision node and a PingIDM endpoint — and they
+turned out to be the same Rhino build, agreeing on every one. The data is in
+`framework/engine-surface.json`, the method in
+[spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md), and a test fails the build
+if someone widens `lib` past what was measured. Nothing is polyfilled
+(`useBuiltIns: false`), so this is the difference between a compile error and
+a `TypeError` in the middle of somebody's login.
+
 PingAM scripts are a **separate TypeScript program** (`tsconfig.am.json`),
 because AM and IDM declare colliding globals — both have a `logger`, and they
-are not the same shape.
+are not the same shape. They share a `lib` because they share an engine.
 
 ### Dependencies come from nix
 
@@ -478,7 +487,7 @@ tools/fo/tests/      its tests, run by `fo check`
 platform/            what you author: IDM conf and scripts, AM config, amster
 platform/AUTHORING.md  the authoring reference
 .github/workflows/   check.yml on every push; e2e.yml stands the stack up nightly
-spike/               Phase 0 evidence and the working reference artefacts
+spike/               Phase 0 evidence, the engine-surface probe, reference artefacts
 PLAN.md              the design, decisions and roadmap
 .fo/<env>/           gitignored per-env state: seed, kubeconfig, values.json
 .fo/baseline/        gitignored: the stock image config `fo config` diffs against
@@ -486,7 +495,9 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-All phases of [PLAN.md](PLAN.md) are done: a developer can **get** a stack,
+All phases of [PLAN.md](PLAN.md) are done, plus a Phase 6 that closed the last
+correctness gap — the pinned `lib` is now measured against both script engines
+rather than assumed. A developer can **get** a stack,
 **change** it, **write typed code against it**, **install examples**, **pull
 live config back into the repo**, and **follow one login across all three
 components** — with CI that runs the gates on every push and stands the whole
@@ -519,6 +530,4 @@ Caveats worth stating plainly:
   is what makes `fo trace` work at all. It means the stack believes a
   client-supplied `X-ForgeRock-TransactionId`. Fine here; in production you
   would only do that behind a gateway that strips the header at the edge.
-- `tsconfig.am.json` inherits `lib` from the PingIDM program. That list has not
-  been verified against PingAM's script engine, so it may permit a method AM
-  does not have.
+

@@ -67,7 +67,7 @@ export function packAmsterConfig(cfg: ResolvedConfig): boolean {
  * journey can import while the nodes it references silently do not, and the
  * first sign of trouble is a 401 and `Node did not exist` buried in AM's log.
  */
-function reportImport(cfg: ResolvedConfig, jobName: string): void {
+function reportImport(cfg: ResolvedConfig, jobName: string): string {
   // By pod, not `job/<name>`: `kubectl logs job/x` waits for a RUNNING pod and
   // times out the moment the job has finished, which is exactly when we want
   // to read it.
@@ -82,14 +82,14 @@ function reportImport(cfg: ResolvedConfig, jobName: string): void {
   ).stdout.trim();
   if (!pods) {
     detail("the job's pod is gone, so there is no import log to show");
-    return;
+    return "";
   }
   const log = capture(
     "kubectl",
     ns(cfg, ["logs", pods.split(/\s+/)[0]!, "-c", "amster"]),
     { env: kubeEnv(cfg), allowFailure: true },
   ).stdout;
-  if (!log) return;
+  if (!log) return "";
 
   const imported = log.match(/^Imported .*$/gm) ?? [];
   const problems = (log.match(/^.*(ERROR|Unable to|Unknown|failed).*$/gim) ?? [])
@@ -102,6 +102,25 @@ function reportImport(cfg: ResolvedConfig, jobName: string): void {
   for (const problem of problems) {
     warn(problem.trim().slice(0, 200));
   }
+  return log;
+}
+
+/**
+ * Does this failure look like an entity that referenced one amster had not
+ * imported yet?
+ *
+ * Amster walks the config tree without knowing which entity types depend on
+ * which, so a node can be processed before the thing it points at. It sorts
+ * `ScriptedDecision` before `Scripts`, which means a scripted decision node
+ * lands before its script exists and PingAM rejects the reference. A second
+ * pass then succeeds, because the first pass created everything else.
+ *
+ * Reproduced deterministically: on a stack with no `risk-login-check` script,
+ * `fo add example-risk-login && fo build && fo amster` fails here every time -
+ * which is the exact sequence the package README tells you to run.
+ */
+export function looksLikeForwardReference(log: string): boolean {
+  return /Data validation failed for the attribute/i.test(log);
 }
 
 /**
@@ -119,6 +138,33 @@ export async function runAmster(
   step("Re-importing amster config");
   packAmsterConfig(cfg);
 
+  const first = await runImportJob(cfg, opts);
+  if (first.state === "ok" || first.state === "timeout") return;
+
+  if (!looksLikeForwardReference(first.log)) {
+    throw new Error(first.error);
+  }
+  // Not a blanket retry: a genuinely malformed entity fails the same way
+  // twice and should say so at once rather than taking a second job to do it.
+  detail("an entity referenced one amster had not imported yet; second pass");
+  const second = await runImportJob(cfg, opts);
+  if (second.state === "failed") {
+    throw new Error(
+      second.error +
+        "\n(this was the second pass; the first failed the same way)",
+    );
+  }
+}
+
+type ImportOutcome =
+  | { state: "ok"; log: string }
+  | { state: "failed"; log: string; error: string }
+  | { state: "timeout"; log: string };
+
+async function runImportJob(
+  cfg: ResolvedConfig,
+  opts: { timeoutSeconds: number },
+): Promise<ImportOutcome> {
   const src = capture(
     "kubectl",
     ns(cfg, ["get", "job", "-l", "app=amster", "-o", "json"]),
@@ -134,7 +180,7 @@ export async function runAmster(
   }
   if (!template) {
     warn("no existing amster job to clone; run `fo up` first");
-    return;
+    return { state: "timeout", log: "" };
   }
 
   const name = `${JOB}-fo-${Date.now().toString(36)}`;
@@ -192,18 +238,22 @@ export async function runAmster(
       continue;
     }
     if ((status.succeeded ?? 0) > 0) {
-      reportImport(cfg, name);
+      const log = reportImport(cfg, name);
       ok("amster import complete");
-      return;
+      return { state: "ok", log };
     }
     if ((status.failed ?? 0) > 0) {
-      reportImport(cfg, name);
-      throw new Error(
-        `amster job/${name} failed. Its pod is usually gone by now; ` +
+      const log = reportImport(cfg, name);
+      return {
+        state: "failed",
+        log,
+        error:
+          `amster job/${name} failed. Its pod is usually gone by now; ` +
           `re-run with the job kept: kubectl -n ${cfg.namespace} get job ${name}`,
-      );
+      };
     }
     await sleep(3000);
   }
   warn(`job/${name} still running after ${opts.timeoutSeconds}s`);
+  return { state: "timeout", log: "" };
 }

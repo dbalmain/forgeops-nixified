@@ -164,6 +164,14 @@ because PingAM and PingIDM declare colliding globals — both have a `logger`,
 and they are not the same shape. A file that imports from
 `framework/index.ts` will not compile here, and should not.
 
+They do share a `lib`, because they share an engine: both were probed on a
+running stack and turned out to be the same Rhino build, agreeing on all 95
+builtins checked ([spike/ENGINE-SURFACE.md](../spike/ENGINE-SURFACE.md)). So
+`Object.entries`, `String#padStart` and `Promise#finally` are available in
+both; `Array#flat`, `Object.hasOwn`, `String#replaceAll`, `Proxy` and
+`Reflect` are in neither, and will not compile. Nothing is polyfilled, so that
+list is the truth rather than a house style.
+
 ```ts
 import { defineAmScript } from "../../framework/am.ts";
 
