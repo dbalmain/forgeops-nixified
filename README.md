@@ -144,6 +144,10 @@ from the TypeScript and are gitignored — edit the `.ts`, never the output.
 
 Run `fo dev`, save a file, and the right tier fires on its own.
 
+**[`platform/AUTHORING.md`](platform/AUTHORING.md)** is the reference: the
+framework API, the validators, the PingAM script surface, the managed-object
+types, and the traps each product sets.
+
 **An amster import replaces an entity, it does not merge into it.** Anything
 you leave out of a JSON file reverts to the schema default, which is often
 `null` — so a sparse OAuth2 client will work on first import and break on the
@@ -467,7 +471,10 @@ alike.
 flake.nix            pins ForgeOps, the Helm chart, and every tool
 fo.config.ts         the stack's shape
 tools/fo/            the CLI (TypeScript, no build step)
+tools/fo/tests/      its tests, run by `fo check`
 platform/            what you author: IDM conf and scripts, AM config, amster
+platform/AUTHORING.md  the authoring reference
+.github/workflows/   check.yml on every push; e2e.yml stands the stack up nightly
 spike/               Phase 0 evidence and the working reference artefacts
 PLAN.md              the design, decisions and roadmap
 .fo/<env>/           gitignored per-env state: seed, kubeconfig, values.json
@@ -476,10 +483,11 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-Phases 1–4.5 of [PLAN.md](PLAN.md): a developer can **get** a stack,
+All phases of [PLAN.md](PLAN.md) are done: a developer can **get** a stack,
 **change** it, **write typed code against it**, **install examples**, **pull
 live config back into the repo**, and **follow one login across all three
-components**. Still to come: docs and CI (Phase 5).
+components** — with CI that runs the gates on every push and stands the whole
+stack up nightly.
 
 Caveats worth stating plainly:
 
@@ -498,6 +506,11 @@ Caveats worth stating plainly:
   connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
   local-file mode), so an offline CSV example would need a cloud bucket or a
   Groovy scripted connector.
+- `e2e.yml` has never run on GitHub — it is written against a runner this
+  machine cannot be. The action versions are pinned to tags that exist today;
+  disk headroom on a standard runner (2.8 GB of images against 14 GB) and
+  PingAM's cold start inside the 60-minute cap are the two things the first
+  real run has to confirm.
 - The log console has one backend, `victorialogs`. PLAN.md lists Loki as an
   escape hatch; it is not implemented. Vector is the collector either way, so
   adding one is a second manifest module and a second query adapter.

@@ -1,0 +1,58 @@
+# The fast gates: everything that does not need a cluster.
+#
+# Runs on every push and pull request, and must stay under a few minutes.
+# Standing up the platform is `e2e.yml`, which is slow enough that putting it
+# here would make the signal useless.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # The flake pins everything else; this is only the nix that reads it.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      # Evaluates every output for this system and builds the devShell, so a
+      # flake that no longer evaluates fails here rather than inside a later
+      # step with a confusing error.
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+      # `fo check` is the same command a developer runs: type-check `fo`, run
+      # the fo tests, then type-check / lint / test / build the platform
+      # TypeScript. Deliberately not reimplemented as separate steps - CI and
+      # the laptop must not be able to disagree about what "green" means.
+      - name: fo check
+        run: nix develop --command fo check
+
+      # The generated managed-object types are committed, and drift between
+      # them and managed.json is a test failure - but a build that WRITES them
+      # would hide that. Fail if the working tree moved.
+      - name: no generated files drifted
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the build changed tracked files; commit the result"
+            git status --short
+            git diff
+            exit 1
+          fi

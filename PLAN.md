@@ -982,10 +982,39 @@ done.
   `full` left the old value in place while `fo up` reported success. `fo` now
   always states the value, including when it equals the default.
 
-### Phase 5 — docs and CI
+### Phase 5 — docs and CI — **DONE**
 
-README quick-start, a `platform/` authoring guide, GitHub Actions running
-`fo up` headless plus the TS gates.
+- **README quick-start** was already there from Phase 1; this phase added the
+  log-console section, the measured backend comparison, and links out.
+- **`platform/AUTHORING.md`** — the authoring reference: directory-to-tier
+  map, the managed/seeded/yours rule, endpoints, tasks, PingAM scripts,
+  validators, faults, managed-object types, testing, and the config formats.
+  Every code example in it was compiled against the real framework before it
+  was committed, not written from memory.
+- **`.github/workflows/check.yml`** — on every push and PR: `nix flake check`,
+  then `fo check` (the same command a developer runs, deliberately not
+  reimplemented as separate steps so CI and the laptop cannot disagree about
+  what green means), then a guard that fails if the build moved a tracked
+  file.
+- **`.github/workflows/e2e.yml`** — nightly and on demand: `fo doctor`,
+  `fo up`, and a smoke test that drives a real PingAM authentication with a
+  chosen transaction id and asks for it back through `fo trace`. That exercises
+  the ingress, the generated TLS, PingAM, the collector and the log store in
+  one command - unlike a readiness check, which passes for a stack that cannot
+  serve. Teardown is `fo down --destroy`, so CI is also the only thing
+  exercising that path.
+
+Both workflows pass `actionlint`.
+
+### Known gap: `e2e.yml` has not run on GitHub
+
+It is written against a runner this machine cannot be. Action versions are
+pinned to tags that exist today. Two things the first real run has to settle:
+disk headroom (2.8 GB of images against a standard runner's 14 GB, which is
+why it reclaims the runner's preinstalled toolchains first) and whether
+PingAM's cold start fits the 60-minute cap. `dev.localhost` resolution is not
+left to chance - the workflow writes `/etc/hosts` rather than relying on the
+runner's resolver, which is a CI crutch and says so.
 
 ---
 

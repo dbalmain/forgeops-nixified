@@ -1,0 +1,133 @@
+# The slow gate: actually stand the platform up.
+#
+# Not on every push. A cold `fo up` pulls about 2.8 GB and takes ten minutes,
+# and a GitHub runner has no image cache, so this is a nightly and on-demand
+# job. It is the only thing that can catch an upstream chart or image change,
+# which is exactly the class of breakage `fo` exists to absorb.
+name: e2e
+
+on:
+  schedule:
+    # 17:00 UTC, which is early morning in AEST - a failure is waiting when
+    # the day starts rather than arriving mid-afternoon.
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  up:
+    runs-on: ubuntu-latest
+    # A cold run is ~10 minutes of pulls plus PingAM's start-up. The cap is
+    # generous because a timeout here is indistinguishable from a real failure
+    # and costs a whole day's signal.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # A standard runner is 4 vCPU / 16 GB / 14 GB disk. The stack measures
+      # ~4.4 GiB resident, so memory is fine; DISK is the tight one, because
+      # the images alone are 2.8 GB. Reclaim what the image ships with.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      # `*.localhost` resolving to loopback is an RFC 6761 behaviour a
+      # developer's resolver almost always provides, and `fo doctor` checks
+      # it. A runner's resolver is not ours to rely on, and a DNS flake here
+      # is indistinguishable from a broken stack - so state it. This is a CI
+      # crutch, not the supported path: `fo` never edits a developer's hosts
+      # file, because that needs sudo and breaks the one-command promise.
+      - name: Resolve dev.localhost
+        run: echo "127.0.0.1 dev.localhost" | sudo tee -a /etc/hosts
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      # Turn the log console on for this run. It is off by default in
+      # fo.config.ts for laptop RAM reasons that do not apply here, and having
+      # it on is what makes the `fo trace` smoke test below possible.
+      - name: Enable the log console
+        run: |
+          sed -i 's|// logs: "victorialogs",|logs: "victorialogs",|' fo.config.ts
+          grep -n 'logs:' fo.config.ts
+
+      - name: fo doctor
+        run: nix develop --command fo doctor
+
+      - name: fo up
+        run: nix develop --command fo up
+
+      - name: fo status
+        run: nix develop --command fo status
+
+      # The smoke test that means something: drive a real authentication with
+      # a transaction id we chose, then ask for it back. It exercises the
+      # ingress, the TLS the chart generated, PingAM, the collector and the
+      # log store in one command - and it fails if any of them is wrong,
+      # unlike a readiness check, which passes for a stack that cannot serve.
+      - name: trace a login end to end
+        env:
+          # Set here rather than inside the quoted script, so it is obvious
+          # where it comes from and shellcheck can see it is not meant to
+          # expand in the outer shell.
+          TX: ci-${{ github.run_id }}
+        run: |
+          # shellcheck disable=SC2016
+          # The single quotes are deliberate: every expansion below belongs to
+          # the inner shell, which runs inside the nix devShell. Expanding
+          # them out here would resolve them against the wrong environment.
+          nix develop --command bash -euo pipefail -c '
+            export KUBECONFIG=.fo/dev/kubeconfig
+            PW=$(kubectl -n dev get secret am-env-secrets \
+                   -o jsonpath="{.data.AM_PASSWORDS_AMADMIN_CLEAR}" | base64 -d)
+            code=$(curl -sk -o /dev/null -w "%{http_code}" \
+              -X POST "https://dev.localhost/am/json/realms/root/authenticate" \
+              -H "Content-Type: application/json" \
+              -H "Accept-API-Version: resource=2.0, protocol=1.0" \
+              -H "X-ForgeRock-TransactionId: $TX" \
+              -H "X-OpenAM-Username: amadmin" -H "X-OpenAM-Password: $PW")
+            [ "$code" = "200" ] || { echo "PingAM authenticate returned $code"; exit 1; }
+
+            # The collector batches; give it a bounded number of tries rather
+            # than one sleep long enough to be flaky either way.
+            for i in $(seq 1 20); do
+              if fo trace "$TX" --json | grep -q AM-ACCESS-OUTCOME; then
+                fo trace "$TX"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "no PingAM audit events reached the log store for $TX"
+            kubectl -n dev logs ds/fo-vector --tail=50 || true
+            kubectl -n dev logs deploy/fo-logs --tail=20 || true
+            exit 1
+          '
+
+      - name: diagnostics on failure
+        if: failure()
+        run: |
+          nix develop --command sh -c '
+            export KUBECONFIG=.fo/dev/kubeconfig
+            kubectl -n dev get pods -o wide || true
+            kubectl -n dev get events --sort-by=.lastTimestamp | tail -40 || true
+            kubectl -n dev describe pods | grep -A10 "Events:" | tail -60 || true
+          '
+
+      # `--destroy` rather than a plain down: the runner is thrown away either
+      # way, and this proves the teardown path still works, which nothing else
+      # in CI does.
+      - name: fo down --destroy
+        if: always()
+        run: nix develop --command fo down --destroy
