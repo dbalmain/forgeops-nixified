@@ -24,17 +24,33 @@ That gap is now closed, by measurement rather than by reading documentation.
 Two probes, one per engine, each reporting whether a builtin exists rather than
 using it:
 
-- **PingAM** — `spike/engine-probe/am-scripted-decision-probe.ts`, deployed as
-  the `risk-login` journey's scripted decision node (`fo add
-  example-risk-login`, then `fo build && fo amster`), driven by one
-  authentication against `?authIndexType=service&authIndexValue=risk-login`,
-  reporting through `logger.error`.
-- **PingIDM** — `spike/engine-probe/idm-endpoint-probe.ts`, deployed as a
-  custom endpoint (`fo build && fo sync`) and queried over REST, reporting in
-  the response body.
+The baseline was taken with two hand-written probes, one deployed per engine.
+Both have since been replaced by `fo doctor --engines`, which re-takes the
+measurement against a running stack:
 
-To re-run either, copy it into `platform/typescript/src/scripts/` or
-`src/endpoints/` respectively, build, deploy, invoke, and read the output.
+```sh
+fo doctor --engines
+```
+
+- **PingIDM** — `POST /openidm/script?_action=eval`. IDM evaluates script
+  inline, so the probe needs no deploy and leaves nothing behind.
+- **PingAM** — AM has no eval action (`_action=evaluate` answers 501), so the
+  probe is installed over REST as a script, a `ScriptedDecisionNode` and a
+  one-node tree, driven by a single authentication, and read back from
+  `logger.error` in AM's log. All three objects are removed afterwards,
+  including when the probe throws. The tree ends at **Failure**, not Success:
+  the probe authenticates nobody, and asking AM to mint a session for a
+  subject that does not exist answers 500 and buries the outcome.
+
+**The probe list is generated from `engine-surface.json` itself**, so the thing
+being verified and the thing verifying it cannot disagree about what to check.
+Add a key to the JSON and both engines probe it on the next run. The original
+probes did drift this way — they had reached 97 checks against 95 — which is
+why they are gone rather than kept as a second copy of the list. They are in
+git history if the original wording of a check is ever needed.
+
+Only the six `emit:*` entries are still hand-written, because they assert that
+downlevelled output *runs* rather than that a name exists.
 
 Existence is tested with `typeof` and with bracket access on the holder — never
 by calling the thing, which would abort the probe at its first absence.
@@ -107,5 +123,12 @@ declares an absent builtin fails the build. Both failure modes were exercised
 before the test was committed: adding `ES2019.Array` (which declares `flat`)
 fails it, and so does declaring `Object.hasOwn` in `engine-lib.d.ts`.
 
-Re-run the probes after a ForgeOps upgrade. The engine can change underneath
-this file, and nothing else will notice.
+Run `fo doctor --engines` after a ForgeOps upgrade. The engine can change
+underneath this file, and nothing in the build would notice: every gate would
+stay green while the pin quietly described the old engine. The command exits
+non-zero on drift and names the builtins that moved, in both directions.
+
+If it reports drift, re-record it — update `engine-surface.json`, then let
+`tests/engine-lib.test.mjs` tell you which `lib` entries no longer hold. Never
+widen a `lib` to make a check pass; that is the failure this whole chain
+exists to prevent.

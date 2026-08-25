@@ -285,6 +285,7 @@ TypeScript throughout. Node 24 from nix, type-stripping only.
 | `fo config export am\|idm`                     | pull live config out of the pod back into `platform/`                                               |
 | `fo config diff`                               | what's running vs what's committed                                                                  |
 | `fo doctor`                                    | docker up, ports 80/443 free, RAM/disk headroom, FQDN resolution                                    |
+| `fo doctor --engines`                          | re-probe both script engines against `engine-surface.json`; needs a running stack                   |
 | `fo upgrade`                                   | bump ForgeOps/platform version; re-seed managed files, report drift                                 |
 | `fo forgeops …`                                | escape hatch to the wrapped upstream CLI                                                            |
 | `fo add\|list\|remove <pkg>` | install / inspect / remove an example package (section 8.1) |
@@ -1075,6 +1076,48 @@ iterability as `Array.prototype[String(Symbol.iterator)]`. `String(symbol)`
 yields a key nothing has, so it reported arrays as non-iterable on an engine
 where they are iterable — and the conclusion would have been to *narrow* the
 lib on false evidence. Indexing with the symbol itself gives the true answer.
+
+### Phase 6.1 — `fo doctor --engines` — **DONE**
+
+Phase 6 closed the `lib` question but left the answer perishable: the surface
+is a measurement, and a ForgeOps upgrade can change the engine underneath it
+with every gate still green. `fo doctor --engines` re-takes the measurement.
+
+**The probe list is generated from `engine-surface.json`.** The two spike
+probes were hand-written per engine and had already drifted apart — 97 checks
+against 95 — so the fix was to stop keeping a second copy of the list. Add a
+key to the JSON and both engines probe it on the next run. Only the six
+`emit:*` behavioural entries are still hand-written, because they assert that
+downlevelled output *runs* rather than that a name exists. The spike probes
+are deleted; git history has them.
+
+**Delivery, per engine:**
+
+- **PingIDM** — `POST /openidm/script?_action=eval`. Inline, no deploy,
+  nothing left behind.
+- **PingAM** — no eval action exists (`_action=evaluate` answers **501**), so
+  the probe is installed over REST as a script, a `ScriptedDecisionNode` and a
+  one-node tree, driven by one authentication and read back from
+  `logger.error`. Teardown runs in a `finally`, so a probe that throws
+  half-way does not leave a journey behind. Six REST calls; no amster, no
+  rebuild, no touching the repo's own journeys.
+
+Two details that had to be measured rather than assumed:
+
+- **The tree ends at Failure, not Success.** The probe authenticates nobody,
+  and routing to Success asks AM to mint a session for a subject that does not
+  exist — answering 500 and burying the real outcome.
+- **AM reports through a JSON log line**, so the last token arrives welded to
+  `","context":"default",...`. Splitting on whitespace alone invents a key and
+  loses a real one.
+
+**Verified against the running stack.** Both engines match the recorded
+surface, exit 0, and AM has no leftovers. The negative control matters more:
+three deliberate edits to `engine-surface.json` — a builtin claimed present
+that is absent, on each engine, and one claimed absent that is present — were
+each reported with the direction of the change, exit 1. Twelve unit tests
+cover the pure logic, including the two bugs above and the
+`String(Symbol.iterator)` trap from Phase 6; reverting either fix fails them.
 
 ### Bug found on the way: `fo amster` failed on a first install
 

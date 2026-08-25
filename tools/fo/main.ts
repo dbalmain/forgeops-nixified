@@ -1,6 +1,7 @@
 import { loadConfig, RELEASE } from "./config.ts";
 import { bold, die, dim } from "./lib/ui.ts";
 import { doctor } from "./commands/doctor.ts";
+import { doctorEngines } from "./commands/engines.ts";
 import { up } from "./commands/up.ts";
 import { down } from "./commands/down.ts";
 import { status } from "./commands/status.ts";
@@ -37,6 +38,7 @@ ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}
   fo trace TRANSACTION_ID [--json]         one login, time-ordered, across AM/IDM/DS
   fo shell COMPONENT [-- CMD...]           exec into a component's pod
   fo doctor [--env NAME]                   preflight checks
+  fo doctor --engines [--env NAME]         re-probe the script engines (needs a running stack)
   fo token [--env NAME]                    OAuth2 access token for IDM REST
 
 ${bold("Inner loop")}
@@ -73,6 +75,7 @@ type Flags = {
   json: boolean;
   destroy: boolean;
   noTilt: boolean;
+  engines: boolean;
   force: boolean;
   check: boolean;
   noUpgrade: boolean;
@@ -87,6 +90,7 @@ function parse(argv: string[]): Flags {
     json: false,
     destroy: false,
     noTilt: false,
+    engines: false,
     force: false,
     check: false,
     noUpgrade: false,
@@ -111,6 +115,8 @@ function parse(argv: string[]): Flags {
       f.destroy = true;
     } else if (a === "--no-tilt") {
       f.noTilt = true;
+    } else if (a === "--engines") {
+      f.engines = true;
     } else if (a === "--force") {
       f.force = true;
     } else if (a === "--check") {
@@ -158,7 +164,10 @@ async function main(): Promise<void> {
       info(cfg, flags.json);
       break;
     case "doctor": {
-      const okAll = await doctor(cfg);
+      // --engines is a separate, slower check against a RUNNING stack: it
+      // re-measures what the script engines provide. The default doctor is a
+      // preflight and must stay runnable with nothing deployed.
+      const okAll = flags.engines ? await doctorEngines(cfg) : await doctor(cfg);
       if (!okAll) process.exitCode = 1;
       break;
     }

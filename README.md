@@ -38,6 +38,7 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo trace TRANSACTION_ID` | One login, time-ordered, across PingAM, PingIDM and PingDS. |
 | `fo shell COMPONENT [-- CMD]` | Exec into a component's pod. |
 | `fo doctor` | Preflight: docker, DNS, ports, memory, disk. |
+| `fo doctor --engines` | Re-probe both script engines against `engine-surface.json`. Needs a running stack. |
 | `fo token` | An OAuth2 access token for calling IDM's REST API. |
 
 ### The inner loop
@@ -197,7 +198,10 @@ That `lib` is not guesswork. Both engines were probed on a running stack —
 turned out to be the same Rhino build, agreeing on every one. The data is in
 `framework/engine-surface.json`, the method in
 [spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md), and a test fails the build
-if someone widens `lib` past what was measured. Nothing is polyfilled
+if someone widens `lib` past what was measured. `fo doctor --engines` re-takes
+the measurement against a running stack and exits non-zero if the engine has
+moved — worth running after a ForgeOps upgrade, which is the one thing that can
+invalidate the pin without touching a line of this repo. Nothing is polyfilled
 (`useBuiltIns: false`), so this is the difference between a compile error and
 a `TypeError` in the middle of somebody's login.
 
@@ -487,7 +491,7 @@ tools/fo/tests/      its tests, run by `fo check`
 platform/            what you author: IDM conf and scripts, AM config, amster
 platform/AUTHORING.md  the authoring reference
 .github/workflows/   check.yml on every push; e2e.yml stands the stack up nightly
-spike/               Phase 0 evidence, the engine-surface probe, reference artefacts
+spike/               Phase 0 evidence, the engine-surface findings, reference artefacts
 PLAN.md              the design, decisions and roadmap
 .fo/<env>/           gitignored per-env state: seed, kubeconfig, values.json
 .fo/baseline/        gitignored: the stock image config `fo config` diffs against
