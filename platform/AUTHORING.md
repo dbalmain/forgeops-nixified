@@ -27,6 +27,12 @@ does the same without Tilt.
 and are gitignored. If you find yourself editing one, the file you want is in
 `src/`.
 
+Deleting a source file removes it properly: `fo build` retires the generated
+output, and the next `fo sync` deletes it from the running pod too, so the
+endpoint stops answering. Only files carrying `fo build`'s own generated
+marker are eligible for that, so nothing you or PingIDM put there is at
+risk.
+
 ## Managed, seeded, yours
 
 Three kinds of file live side by side, distinguished by a header comment and
