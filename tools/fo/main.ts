@@ -7,6 +7,12 @@ import { status } from "./commands/status.ts";
 import { info } from "./commands/info.ts";
 import { logs } from "./commands/logs.ts";
 import { shell } from "./commands/shell.ts";
+import { syncIdm } from "./commands/sync.ts";
+import { token } from "./commands/token.ts";
+import { runAmster } from "./commands/amster.ts";
+import { restart } from "./commands/restart.ts";
+import { watchLoop } from "./commands/watch.ts";
+import { dev } from "./commands/dev.ts";
 
 const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
@@ -18,6 +24,14 @@ ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}
   fo logs [COMPONENT] [--env NAME] [...]   live tail (extra args go to stern)
   fo shell COMPONENT [-- CMD...]           exec into a component's pod
   fo doctor [--env NAME]                   preflight checks
+  fo token [--env NAME]                    OAuth2 access token for IDM REST
+
+${bold("Inner loop")}
+  fo dev [--env NAME] [--no-tilt]          live session: watch and apply changes
+  fo watch [--env NAME]                    the same loop without Tilt
+  fo sync [conf|script]                    tier 1: push IDM config into the pod   <1s
+  fo amster [--env NAME]                   tier 2: re-import amster config       ~60s
+  fo restart COMPONENT                     tier 3: roll a component             ~2min
 
 ${dim("COMPONENT is one of: am idm ds-idrepo ds-cts amster admin-ui end-user-ui login-ui")}
 ${dim("--env defaults to `dev`; every env is a namespace in one shared k3d cluster.")}
@@ -27,6 +41,7 @@ type Flags = {
   env?: string;
   json: boolean;
   destroy: boolean;
+  noTilt: boolean;
   timeout: number;
   rest: string[];
   passthrough: string[];
@@ -36,6 +51,7 @@ function parse(argv: string[]): Flags {
   const f: Flags = {
     json: false,
     destroy: false,
+    noTilt: false,
     timeout: 900,
     rest: [],
     passthrough: [],
@@ -54,6 +70,8 @@ function parse(argv: string[]): Flags {
       f.json = true;
     } else if (a === "--destroy") {
       f.destroy = true;
+    } else if (a === "--no-tilt") {
+      f.noTilt = true;
     } else if (a === "--timeout") {
       f.timeout = Number(argv[++i]);
     } else {
@@ -64,14 +82,19 @@ function parse(argv: string[]): Flags {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const command = argv[0];
+  // Flags are parsed from the WHOLE argv, not just after the subcommand, so
+  // `fo --env dev sync conf` and `fo sync conf --env dev` are both valid. The
+  // first non-flag token is the command. (Tilt writes the former shape
+  // naturally, and an earlier version of this parser rejected it.)
+  const flags = parse(process.argv.slice(2));
+  const command = flags.rest[0];
+  const args = flags.rest.slice(1);
+
   if (!command || command === "-h" || command === "--help" || command === "help") {
     console.log(USAGE);
     return;
   }
 
-  const flags = parse(argv.slice(1));
   const cfg = await loadConfig(flags.env);
 
   switch (command) {
@@ -92,11 +115,37 @@ async function main(): Promise<void> {
       if (!okAll) process.exitCode = 1;
       break;
     }
+    case "dev":
+      await dev(cfg, { noTilt: flags.noTilt });
+      break;
+    case "watch":
+      await watchLoop(cfg);
+      break;
+    case "sync": {
+      const only = args[0];
+      if (only && only !== "conf" && only !== "script") {
+        die(`fo sync takes "conf" or "script", not "${only}"`);
+      }
+      syncIdm(cfg, only as "conf" | "script" | undefined);
+      break;
+    }
+    case "amster":
+      await runAmster(cfg, { timeoutSeconds: flags.timeout });
+      break;
+    case "restart": {
+      const component = args[0];
+      if (!component) die("fo restart needs a component");
+      await restart(cfg, component);
+      break;
+    }
+    case "token":
+      await token(cfg);
+      break;
     case "logs":
-      await logs(cfg, flags.rest[0], flags.rest.slice(1));
+      await logs(cfg, args[0], args.slice(1));
       break;
     case "shell": {
-      const component = flags.rest[0];
+      const component = args[0];
       if (!component) die("fo shell needs a component");
       await shell(cfg, component, flags.passthrough);
       break;

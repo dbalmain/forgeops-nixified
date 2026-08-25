@@ -36,6 +36,18 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo logs [COMPONENT]` | Live multi-pod tail. Extra args pass through to `stern`. |
 | `fo shell COMPONENT [-- CMD]` | Exec into a component's pod. |
 | `fo doctor` | Preflight: docker, DNS, ports, memory, disk. |
+| `fo token` | An OAuth2 access token for calling IDM's REST API. |
+
+### The inner loop
+
+| Command | Does |
+| ------- | ---- |
+| `fo dev` | Live session: watch `platform/` and apply each change. Uses Tilt's web UI when Tilt is present. |
+| `fo watch` | The same loop with no Tilt. |
+| `fo sync [conf\|script]` | Tier 1 by hand: push IDM config into the running pod. |
+| `fo amster` | Tier 2 by hand: re-import amster config. |
+| `fo restart COMPONENT` | Tier 3 by hand: roll a component. |
+
 
 `COMPONENT` is one of `am idm ds-idrepo ds-cts amster admin-ui end-user-ui
 login-ui`.
@@ -51,6 +63,19 @@ Measured on a 22-core / 30 GB Linux box:
 | `fo up` when already running | **~17 s** |
 | Whole stack, actual memory | **~4.4 GiB** |
 
+Inner loop, measured save-to-live:
+
+| You edit | Mechanism | Measured |
+| --- | --- | --- |
+| `platform/idm/conf/**` | synced into the pod, file watcher reloads | **18 ms – 1.1 s** |
+| `platform/idm/script/**` | same, plus a script recompile | **~1.1 s** |
+| `platform/amster/config/**` | packed into a configMap, amster job re-runs | **~22 s** |
+| `platform/am/config/**` | roll the PingAM pod | **~51 s** |
+
+No pod restarts in the first two. The ~1 s floor is
+`javascript.recompile.minimumInterval`, which `fo`'s dev profile already lowers
+from ForgeOps' 60 s.
+
 ## Environments
 
 `--env NAME` (default `dev`) is one flag that derives everything: the namespace,
@@ -60,6 +85,41 @@ many namespaces. If you never type it, you never see it.
 ```sh
 fo up --env feature-x     # https://feature-x.localhost
 ```
+
+## Editing the platform
+
+Everything you author lives in `platform/` and is version controlled:
+
+```text
+platform/idm/conf/**       IDM config JSON            tier 1  — no restart
+platform/idm/script/**     IDM scripts                tier 1  — no restart
+platform/amster/config/**  journeys, OAuth2 clients   tier 2  — job re-runs
+platform/am/config/**      PingAM file-based config   tier 3  — pod rolls
+```
+
+Run `fo dev`, save a file, and the right tier fires on its own.
+
+**An amster import replaces an entity, it does not merge into it.** Anything
+you leave out of a JSON file reverts to the schema default, which is often
+`null` — so a sparse OAuth2 client will work on first import and break on the
+second, once your file has overwritten the defaults AM filled in. Spell out
+every field you depend on. `fo config export` (Phase 4) is the reliable way to
+get a complete file.
+
+Two demos ship in the box, so the loop is provable on a fresh clone:
+`platform/idm/script/hello.js` (a custom IDM endpoint) and
+`platform/amster/config/.../fo-demo.json` (an OAuth2 client).
+
+```sh
+curl -k -H "Authorization: Bearer $(fo token)" \
+  https://dev.localhost/openidm/endpoint/hello
+```
+
+### Calling IDM's REST API
+
+IDM delegates authentication to AM, so the `openidm-admin` password is **not**
+usable against `/openidm/**` — you get `authenticationId: anonymous` and a 403
+that reads like an access-control problem. `fo token` gets you a real token.
 
 ## Passwords are stable
 
@@ -118,7 +178,12 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-Phase 1 of [PLAN.md](PLAN.md): a developer can get a stack. Tilt and the
-hot-reload inner loop (Phase 2), the TypeScript endpoint framework (Phase 3),
-and config round-tripping (Phase 4) are not built yet — though the IDM dev
-profile `fo` builds already enables the file watcher that Phase 2 depends on.
+Phases 1 and 2 of [PLAN.md](PLAN.md): a developer can **get** a stack and
+**change** it. Still to come: the TypeScript endpoint framework (Phase 3), the
+package repository (Phase 3.5), config round-tripping and `fo upgrade`
+(Phase 4), and the log console (Phase 4.5).
+
+One caveat worth stating plainly: tier 3 is verified as *"roll the PingAM
+pod"*, but rebuilding an `am-config` image from `platform/am/config/` is
+unexercised, because nothing produces correctly-shaped PingAM file-based config
+until `fo config export am` lands in Phase 4.

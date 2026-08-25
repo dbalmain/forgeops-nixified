@@ -1,0 +1,5 @@
+{
+  "type" : "text/javascript",
+  "file" : "hello.js",
+  "context" : "endpoint/hello"
+}

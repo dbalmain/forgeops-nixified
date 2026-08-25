@@ -27,6 +27,7 @@
             kubernetes-helm
             kustomize
             stern
+            tilt
             jq
             docker-client
           ];
@@ -68,6 +69,7 @@
             kubectl
             kubernetes-helm
             stern
+            tilt
             jq
           ]);
 

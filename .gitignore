@@ -7,5 +7,6 @@
 # node
 node_modules/
 
-# generated from platform/typescript
-/platform/idm/script/
+# Phase 3 will GENERATE platform/idm/script/ from platform/typescript/, at
+# which point this becomes `/platform/idm/script/`. Until then the scripts
+# there are hand-authored sources and must be tracked.

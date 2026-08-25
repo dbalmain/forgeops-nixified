@@ -596,10 +596,65 @@ Three things Phase 1 found that Phase 0 could not:
   has an explicit decision for every `repository:` in the pinned chart**, so a
   component added upstream fails loudly instead of silently sitting on `latest`.
 
-### Phase 2 — Tilt and the inner loop
+### Phase 2 — Tilt and the inner loop — **DONE**
 
-Tiltfile, config-image builds, the three-tier loop, live_update.
-**A developer can change the stack.**
+`fo dev`, `fo watch`, `fo sync`, `fo amster`, `fo restart`, `fo token`, and a
+55-line Tiltfile. **A developer can change the stack.**
+
+All three tiers are measured save-to-live, and every one beat its budget:
+
+| Tier | Budgeted | Measured |
+| ---- | -------- | -------- |
+| IDM conf | < 5 s | **18 ms – 1.1 s** |
+| IDM script | < 5 s | **~1.1 s** |
+| amster | ~60 s | **~22 s** |
+| PingAM roll | ~2 min | **~51 s** |
+
+The ~1 s floor on scripts is `javascript.recompile.minimumInterval`, which the
+dev profile sets. Sub-second was not the target and is a nice surprise: the
+sync itself is ~110 ms, so the loop is dominated by IDM's own reload.
+
+What Phase 2 found:
+
+- **The `amster-config` configMap is an unused extension point.** The chart
+  mounts it at `/opt/amster/config/amster-import.tar.gz` with
+  `optional: true` and never creates it, so `fo` fills it from
+  `platform/amster/config/`. Verified end to end: an OAuth2 client authored in
+  the repo is importable and then issues real tokens.
+- **The amster Job cannot be restarted, only cloned.** It is a Helm
+  post-install hook, and a completed Job is immutable. `fo` clones it under a
+  fresh name, stripping the API-server-generated fields and the Helm hook
+  annotations so the copy is an ordinary Job that Helm ignores.
+- **`openidm-admin` does not work against `/openidm/**`.** ForgeOps runs IDM in
+  platform mode with authentication delegated to AM, so the password `fo info`
+  prints yields `authenticationId: anonymous` and a 403 that reads like an
+  authorisation bug. Hence `fo token`, and hence `fo info` now says so. The
+  `idm-provisioning` client lives in the **root** realm — this deployment has no
+  `alpha` realm, contrary to the usual ForgeOps assumption.
+- **An amster import replaces, it does not merge.** A sparse OAuth2 client
+  imported cleanly the first time and broke on the second, when the file's
+  omitted fields overwrote the defaults AM had filled in
+  (`Unknown Signing Algorithm`, because `idTokenSignedResponseAlg` had gone to
+  null). Only a repeated inner loop shows this, which is a small argument that
+  the loop is worth having. It also raises the value of `fo config export`
+  (Phase 4): a hand-written amster file is a liability.
+- **Tilt earned its place immediately** by catching a CLI defect: the Tiltfile
+  naturally writes `fo --env dev sync conf`, and the parser only accepted flags
+  *after* the subcommand. Flags are now parsed from the whole argv.
+
+### Deviation from the plan: `fo up` does not block on Tilt
+
+The plan (D4, section 6) had `fo up` end in `tilt up`. It does not.
+
+Phase 1 established that `fo up` converging and then printing URLs and
+credentials is the thing that makes the stack approachable, and a full-screen
+Tilt UI would bury exactly that. So the split is `fo up` for a stack and
+`fo dev` for the loop — two commands, each of which does one legible thing,
+and `fo dev` is re-runnable without re-converging the cluster.
+
+This also makes `fo down` simpler: there is no Tilt daemon whose lifetime
+`fo up` owns, which removes the "Tilt is a second daemon" risk from section 12
+rather than mitigating it.
 
 ### Phase 3 — TypeScript framework
 
@@ -640,7 +695,7 @@ README quick-start, a `platform/` authoring guide, GitHub Actions running
 | RAM | **Low** (was Medium) | Measured **4.4 GiB actual** for the whole stack, against 6.5 GiB of requests. A 16 GB laptop is comfortable, not marginal. macOS still needs Docker Desktop's VM raised. `fo doctor` checks and warns. |
 | **Licensing**                                                                                                                   | Medium   | Images pull anonymously, but Ping's subscription terms govern _use_. This is a dev/eval stack; the README must say so plainly and must not imply a production path.                                                                                                          |
 | **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | Medium   | Pin hard via the flake input. `fo upgrade` is a first-class command, not an afterthought, precisely because of this rate of change.                                                                                                                                          |
-| **Tilt is a second daemon**                                                                                                     | Low      | `fo up` owns its lifecycle; `fo down` guarantees it's gone. Tilt is never invoked directly by a developer.                                                                                                                                                                   |
+| **Tilt is a second daemon**                                                                                                     | ~~Low~~ **Gone** | Resolved in Phase 2 rather than mitigated: `fo up` no longer starts Tilt at all. Tilt runs only for as long as a developer keeps `fo dev` in the foreground, and `fo watch` does the same job without it.                                                                     |
 
 ---
 
@@ -666,7 +721,7 @@ Answered 2026-08-25:
 | Run the Phase 0 spike now? | Yes | In progress; images pulled (2.8 GB) |
 | Ship seed examples? | No — a **package repository** of optional, installable examples | D8, section 8.1, Phase 3.5 |
 | Keep the name `fo`? | Yes, and shadow any local `fo`; support an alias for those who want one | Section 5, "The `fo` name" |
-| Should `fo up` block on the Tilt UI? | Block | Section 6 |
+| Should `fo up` block on the Tilt UI? | **No** — `fo up` converges and exits; `fo dev` owns the live session | Revised in Phase 2 |
 | Log console? | Tiered, VictoriaLogs as the opt-in default | D7, section 9, Phase 4.5 |
 | Replace Tilt with our own tooling? | No — keep it, and bound it so it stays replaceable | D6, section 10 |
 

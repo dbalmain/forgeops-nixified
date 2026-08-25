@@ -13,24 +13,33 @@ const CREDENTIALS: Array<{
   secret: string;
   key: string;
   user: string;
+  note?: string;
 }> = [
   {
     label: "AM admin",
     secret: "am-env-secrets",
     key: "AM_PASSWORDS_AMADMIN_CLEAR",
     user: "amadmin",
+    note: "the platform UI and the AM console",
   },
   {
     label: "IDM admin",
     secret: "idm-env-secrets",
     key: "OPENIDM_ADMIN_PASSWORD",
     user: "openidm-admin",
+    // ForgeOps runs IDM in platform mode, so authentication is delegated to
+    // AM. This password is IDM's internal admin and does NOT work against
+    // /openidm/** through the ingress - you get `authenticationId: anonymous`
+    // and a 403 that reads like an access-control problem. Saying so here
+    // costs one line and saves an afternoon.
+    note: "internal only - NOT valid for /openidm REST; use `fo token`",
   },
   {
     label: "DS dirmanager",
     secret: "ds-passwords",
     key: "dirmanager.pw",
     user: "uid=admin",
+    note: "LDAP, via `fo shell ds-idrepo`",
   },
 ];
 
@@ -92,10 +101,11 @@ export function info(cfg: ResolvedConfig, asJson: boolean): void {
           namespace: cfg.namespace,
           fqdn: cfg.fqdn,
           urls: Object.fromEntries(urls(cfg)),
-          credentials: creds.map(({ label, user, password }) => ({
+          credentials: creds.map(({ label, user, password, note }) => ({
             label,
             user,
             password,
+            ...(note ? { note } : {}),
           })),
         },
         null,
@@ -112,9 +122,17 @@ export function info(cfg: ResolvedConfig, asJson: boolean): void {
   if (creds.length === 0) {
     console.log(`   ${dim("no secrets yet - is the stack up? try: fo up")}`);
   } else {
-    table(creds.map((c) => [c.label, `${c.user} / ${c.password}`]));
+    table(
+      creds.map((c) => [
+        c.label,
+        `${c.user} / ${c.password}${c.note ? dim(`   ${c.note}`) : ""}`,
+      ]),
+    );
   }
   console.log(
     `\n ${dim("TLS is a cert-manager self-signed cert, so browsers will warn.")}`,
+  );
+  console.log(
+    ` ${dim("For IDM REST: curl -k -H \"Authorization: Bearer $(fo token)\" ...")}`,
   );
 }
