@@ -10,18 +10,19 @@ export default defineStack({
   // fqdnTemplate: "{env}.localhost",
   // dsDiskSize: "10Gi",
 
-  // The log console. Off by default: RAM is the binding constraint on a
-  // laptop. Uncomment to add VictoriaLogs plus a Vector DaemonSet (~250 Mi),
-  // a web console on /logs, and `fo trace <transactionId>`.
+  // The log console is ON by default: VictoriaLogs plus a Vector DaemonSet,
+  // about 250 Mi, a web console on /logs, and `fo trace <transactionId>`.
   //
-  // logs: "victorialogs",
+  // Turn it off if you are tight on RAM:
+  //
+  // logs: "off",
   //
   // The long form, with the defaults spelled out:
   //
   // logs: {
   //   backend: "victorialogs",
   //   includeHealthChecks: false,  // kubelet probes: 96-99% of the UI pods
-  //   dsAccessDetail: "filtered",  // "full" puts PingDS in every trace
+  //   dsAccessDetail: "full",      // "filtered" restores upstream's quiet DS
   //   retention: "7d",
   //   diskSize: "5Gi",
   // },

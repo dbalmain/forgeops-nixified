@@ -94,11 +94,18 @@ export async function up(
     ticker.stop();
   }
 
-  await waitReady(cfg, 300);
-  // After the platform, not before: the collector's field selector is
-  // namespace-scoped and the store's Ingress reuses the chart's TLS secret,
-  // so both need the chart's objects to exist first.
+  // After helm, because the collector is scoped to this namespace and the
+  // store's Ingress reuses the chart's TLS secret - but BEFORE waitReady, so
+  // the one wait below covers the log stack too.
+  //
+  // It used to be after. `fo up` then returned with the console still
+  // Pending on its PVC and its image pull, having reported success and
+  // printed a URL that 404s - and `fo trace` immediately after a `fo up`
+  // failed with "no log store running". Caught by running the CI sequence
+  // from a destroyed cluster, which is the only place the ordering shows.
   await ensureLogStack(cfg);
+
+  await waitReady(cfg, 300);
   info(cfg, false);
 }
 

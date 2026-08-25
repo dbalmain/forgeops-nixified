@@ -474,18 +474,28 @@ already sets `OPENIDM_AUDIT_HANDLER_STDOUT_ENABLED: "true"` - IDM's audit stream
 is *already* structured JSON on stdout. So the requirement is a store that
 **indexes JSON fields**, not one that greps lines.
 
-### Three tiers, defaulting to off
+### Two tiers, defaulting to on
 
 | Tier | What | Footprint | Gets you |
 | ---- | ---- | --------- | -------- |
-| **0 - always on** | Tilt's log pane (D4: `fo up` blocks on it) plus `stern` from nix, wrapped as `fo logs [component]` | 0 | live multi-pod tail, per-resource filter |
-| **1 - opt-in**, `logs: "victorialogs"` | VictoriaLogs plus a Vector DaemonSet; web UI on `logs.<env>.localhost`; CLI via `fo logs search '<LogsQL>'` | ~250 Mi | indexed JSON fields, history across pod restarts, real search |
-| **escape hatch**, `logs: "loki"` | Loki + Grafana + Alloy | ~700 Mi - 1 Gi | Grafana Explore; only worth it if you also want metrics |
+| **0** | `stern` from nix, wrapped as `fo logs [component]` | 0 | live multi-pod tail, per-resource filter |
+| **1 - the default**, `logs: "victorialogs"` | VictoriaLogs plus a Vector DaemonSet; web console on `/logs`; `fo logs search '<LogsQL>'` and `fo trace` | ~250 Mi | indexed JSON fields, history across pod restarts, one login across three components |
 
-**Why VictoriaLogs is the default opt-in rather than Loki**: one container
-instead of three, 3-4x lighter for the same job, `victorialogs` 1.52.0 is
-already in nixpkgs, and it ingests the Loki push API and OTLP, so moving to
-Loki later does not change the collector.
+**Revised 2026-08-26 on two counts.**
+
+Tier 1 was going to be opt-in, because RAM is the binding constraint. It is
+now the default: measured, the whole stack is 4.4 GiB actual and 4.8 GiB with
+the console, so a 16 GB laptop is not where this decides anything - and
+`fo trace` is the single most useful thing here. `logs: "off"` is one line for
+anyone who disagrees.
+
+There was also going to be a `logs: "loki"` escape hatch - Loki + Grafana +
+Alloy, ~700 Mi - 1 Gi, for people who want Grafana Explore. **Dropped, not
+deferred.** The measurements below made the comparison one-sided, and a second
+backend means a second query dialect behind `fo trace` for no gain on a
+laptop. VictoriaLogs ingests the Loki push API and OTLP, so if someone ever
+does want Loki, the collector does not change - which is what made this safe
+to decide rather than hedge.
 
 ### D7 revisited: measured against the Rust alternatives
 
@@ -524,9 +534,10 @@ comparison, so the idle figures are the firmer ones; ingest timings are not
 comparable (VictoriaLogs accepts asynchronously, Quickwit was forced to
 `commit=wait_for`).
 
-**Why it defaults off**: RAM is the binding constraint. The stack already
-requests ~6.5 Gi; on a 16 GB laptop another gigabyte is the difference between
-working and swapping. One line in a typed config file is a low enough barrier.
+**On the RAM worry that made this opt-in in the first place**: the stack
+*requests* ~6.5 Gi but measures 4.4 GiB actual, and 4.8 GiB with the console.
+That is not the difference between working and swapping. `logs: "off"` is
+there for a machine where it is.
 
 ### The part worth more than the console
 
@@ -961,12 +972,15 @@ minted its own root transaction id and a login could not be followed across
 them. All four read the same placeholder, and `platform.env` is the one chart
 key that reaches all four, so `fo` sets it once.
 
-### Deviation: no Loki escape hatch
+### Decision: no Loki, and the console is on by default
 
-Section 9 lists `logs: "loki"` as an escape hatch. Not implemented. Vector is
-the collector either way, so adding it is a second manifest module and a
-second query adapter behind `fo trace` - the seam is there, the work is not
-done.
+Both settled 2026-08-26; section 9 carries the reasoning. Loki is dropped
+rather than deferred, and `logs` defaults to `"victorialogs"` rather than
+`"off"`.
+
+`dsAccessDetail` defaults to `"full"` for the same reason - this is a
+development stack, and upstream's quiet PingDS means the DS leg of a trace is
+empty exactly when nothing is wrong.
 
 ### Two bugs found by deploying, not by reading
 
@@ -1006,10 +1020,30 @@ done.
 
 Both workflows pass `actionlint`.
 
-### Known gap: `e2e.yml` has not run on GitHub
+### `e2e.yml`'s sequence has been run, locally
 
-It is written against a runner this machine cannot be. Action versions are
-pinned to tags that exist today. Two things the first real run has to settle:
+The workflow itself has still never run on GitHub, but its steps have: on
+2026-08-26 the whole sequence - `fo down --destroy`, `fo doctor`, `fo up`,
+`fo status`, the `fo trace` smoke test - was run from a destroyed cluster,
+twice, with the same assertions.
+
+The first run found a real ordering bug. `fo up` deployed the log stack
+**after** `waitReady`, so it returned reporting success while the console was
+still Pending on its PVC and image pull, printed a URL that 404s, and a
+`fo trace` immediately afterwards failed with "no log store running". Nothing
+short of building from nothing shows that. Fixed by deploying the log stack
+before the wait, so the one wait covers all thirteen pods; the second run was
+clean and the trace hit first time.
+
+That run also vindicated `dsAccessDetail: "full"`: a plain healthy `amadmin`
+login now traces across `am`, `ds-idrepo` and `ds-cts`, showing the identity
+search and the CTS session-token write. Under upstream's filter those three
+lines do not exist.
+
+### Known gap: the GitHub runner environment
+
+What has not been exercised is the runner itself. Action versions are pinned
+to tags that exist today. Two things the first real run has to settle:
 disk headroom (2.8 GB of images against a standard runner's 14 GB, which is
 why it reclaims the runner's preinstalled toolchains first) and whether
 PingAM's cold start fits the 60-minute cap. `dev.localhost` resolution is not

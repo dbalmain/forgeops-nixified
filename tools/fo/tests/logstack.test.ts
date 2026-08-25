@@ -49,7 +49,10 @@ function cfg(over: Partial<ResolvedConfig> = {}): ResolvedConfig {
 }
 
 test("logs config accepts the string shorthand and the object form", () => {
-  assert.equal(normalizeLogs(undefined).backend, "off");
+  // The console is on unless asked otherwise: this is a development stack and
+  // `fo trace` is the reason it exists.
+  assert.equal(normalizeLogs(undefined).backend, "victorialogs");
+  assert.equal(normalizeLogs("off").backend, "off");
   assert.equal(normalizeLogs("victorialogs").backend, "victorialogs");
   // The shorthand must still get every default, or `fo up` would deploy a
   // store with no retention and no disk size.
@@ -260,21 +263,26 @@ test("the generated pipeline loads in the real Vector binary", () => {
 
 test("PingDS access detail is always stated, so it can be switched back", () => {
   type WithEnv = Record<string, { env?: Array<{ name: string; value: string }> }>;
-  const filtered = buildValues(cfg()) as WithEnv;
-  const full = buildValues(
+  const full = buildValues(cfg()) as WithEnv;
+  const filtered = buildValues(
     cfg({
-      logs: normalizeLogs({ backend: "victorialogs", dsAccessDetail: "full" }),
+      logs: normalizeLogs({
+        backend: "victorialogs",
+        dsAccessDetail: "filtered",
+      }),
     }),
   ) as WithEnv;
 
   // Both stores, or a trace through the CTS is still blank.
   for (const key of ["ds_idrepo", "ds_cts"]) {
+    // The default: PingDS logs every operation, so it appears in a trace of a
+    // request that worked, not only one that failed or was slow.
     assert.deepEqual(full[key]?.env, [
       { name: "DS_LOG_FILTERING_POLICY", value: "no-filtering" },
     ]);
-    // The discriminating case: the default must state `inclusive` rather than
+    // The discriminating case: `filtered` must STATE `inclusive` rather than
     // omit the key. The chart drops an empty env list from the manifest, so
-    // an omitted key leaves whatever was there before - switching back from
+    // an omitted key leaves whatever was there before - switching away from
     // `full` would be a silent no-op.
     assert.deepEqual(filtered[key]?.env, [
       { name: "DS_LOG_FILTERING_POLICY", value: "inclusive" },

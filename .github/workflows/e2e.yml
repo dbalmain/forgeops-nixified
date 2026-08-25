@@ -55,14 +55,6 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@v14
 
-      # Turn the log console on for this run. It is off by default in
-      # fo.config.ts for laptop RAM reasons that do not apply here, and having
-      # it on is what makes the `fo trace` smoke test below possible.
-      - name: Enable the log console
-        run: |
-          sed -i 's|// logs: "victorialogs",|logs: "victorialogs",|' fo.config.ts
-          grep -n 'logs:' fo.config.ts
-
       - name: fo doctor
         run: nix develop --command fo doctor
 

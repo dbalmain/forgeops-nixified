@@ -103,6 +103,7 @@ Measured on a 22-core / 30 GB Linux box:
 | `fo up` warm | **~2 min** |
 | `fo up` when already running | **~17 s** |
 | Whole stack, actual memory | **~4.4 GiB** |
+| …with the log console on (the default) | **~4.8 GiB** |
 
 Inner loop, measured save-to-live:
 
@@ -314,15 +315,15 @@ says so and leaves it to you.
 
 ## The log console
 
-Off by default, because RAM is the binding constraint on a laptop. One line in
-`fo.config.ts` turns it on:
+On by default. `fo up` deploys VictoriaLogs and a Vector DaemonSet — about
+250 Mi together — and `fo info` prints the console URL.
+
+The whole stack measures ~4.4 GiB actual and ~4.8 GiB with the console, so
+this is not what decides whether a 16 GB laptop copes. If yours is the exception, one line turns it off:
 
 ```ts
-logs: "victorialogs",
+logs: "off",
 ```
-
-`fo up` then deploys VictoriaLogs and a Vector DaemonSet — about 250 Mi
-together — and `fo info` starts printing the console URL.
 
 | | |
 | --- | --- |
@@ -381,13 +382,15 @@ Two knobs, both set from measurement rather than intuition:
   them). On a 13-hour-old stack they were **99% of login-ui's log lines and
   96% of admin-ui's**. Keeping them means a console that mostly shows
   Kubernetes talking to itself.
-- **PingDS logs what ForgeOps configured it to log** (`dsAccessDetail: "full"`
-  changes that). ForgeOps ships PingDS's console access logger filtered to four
-  criteria — administrative requests, auth failures, requests over 1000 ms, and
-  misbehaving clients — so it wrote **18 KB where each UI pod wrote 1.4 MB**.
-  The catch is that a *healthy* login produces no DS output at all, so the DS
-  leg of a trace is empty exactly when nothing is wrong. `"full"` fixes that at
-  roughly **8 KB of DS output per PingIDM REST call**.
+- **PingDS logs everything**, which is *not* what ForgeOps ships
+  (`dsAccessDetail: "filtered"` restores that). Upstream filters PingDS's
+  console access logger to four criteria — administrative requests, auth
+  failures, requests over 1000 ms, and misbehaving clients — so it wrote
+  **18 KB where each UI pod wrote 1.4 MB**. Quiet, and the right default on a
+  server nobody is watching. It is the wrong one here: a *healthy* login
+  produces no DS output at all, so the DS leg of a trace is empty exactly when
+  nothing is wrong. Unfiltered costs roughly **8 KB of DS output per PingIDM
+  REST call**.
 
 The collector reads from the **tail** of each log file, so the console covers
 "from when you turned it on" rather than re-ingesting the node's backlog.
@@ -439,15 +442,15 @@ export default defineStack({
   fqdnTemplate: "{env}.localhost",
   dsDiskSize: "10Gi",
 
-  // Off by default. A bare string is shorthand for `{ backend: "..." }`.
-  logs: "victorialogs",
-  // logs: {
-  //   backend: "victorialogs",
-  //   includeHealthChecks: false,   // kubelet probe traffic
-  //   dsAccessDetail: "filtered",   // or "full" — see below
-  //   retention: "7d",
-  //   diskSize: "5Gi",
-  // },
+  // On by default. A bare string is shorthand for `{ backend: "..." }`,
+  // so `logs: "off"` is the whole opt-out.
+  logs: {
+    backend: "victorialogs",
+    includeHealthChecks: false,   // kubelet probe traffic
+    dsAccessDetail: "full",       // "filtered" restores upstream's quiet PingDS
+    retention: "7d",
+    diskSize: "5Gi",
+  },
 });
 ```
 
@@ -506,14 +509,12 @@ Caveats worth stating plainly:
   connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
   local-file mode), so an offline CSV example would need a cloud bucket or a
   Groovy scripted connector.
-- `e2e.yml` has never run on GitHub — it is written against a runner this
-  machine cannot be. The action versions are pinned to tags that exist today;
-  disk headroom on a standard runner (2.8 GB of images against 14 GB) and
-  PingAM's cold start inside the 60-minute cap are the two things the first
-  real run has to confirm.
-- The log console has one backend, `victorialogs`. PLAN.md lists Loki as an
-  escape hatch; it is not implemented. Vector is the collector either way, so
-  adding one is a second manifest module and a second query adapter.
+- `e2e.yml` has never run on GitHub. Its *sequence* has — the whole thing was
+  run locally from a destroyed cluster, twice, and found a real bug — but the
+  runner environment has not. Action versions are pinned to tags that exist
+  today; disk headroom on a standard runner (2.8 GB of images against 14 GB)
+  and PingAM's cold start inside the 60-minute cap are what the first real run
+  has to confirm.
 - `fo` sets `PLATFORM_TRUST_TRANSACTION_HEADER=true` on every component, which
   is what makes `fo trace` work at all. It means the stack believes a
   client-supplied `X-ForgeRock-TransactionId`. Fine here; in production you

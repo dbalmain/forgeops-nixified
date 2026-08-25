@@ -40,9 +40,15 @@ export const ALL_COMPONENTS: Component[] = [
 ];
 
 /**
- * The log console (PLAN.md section 9). `off` is tier 0: `fo logs` tails pods
- * with stern and the cluster carries nothing. `victorialogs` adds the tier-1
- * indexed store plus a Vector DaemonSet.
+ * The log console (PLAN.md section 9). `victorialogs` is the default: an
+ * indexed store plus a Vector DaemonSet, about 250 Mi, and the thing that
+ * makes `fo trace` work. `off` drops to tier 0 - `fo logs` tails pods with
+ * stern and the cluster carries nothing extra.
+ *
+ * There is no Loki option and there is not going to be one. It was planned as
+ * an escape hatch; measurement made the case one-sided (PLAN.md section 9),
+ * and a second backend is a second query dialect behind `fo trace` for no
+ * gain on a laptop.
  */
 export type LogsBackend = "off" | "victorialogs";
 
@@ -69,16 +75,19 @@ export type LogsOptions = {
   /**
    * How much PingDS puts on stdout.
    *
-   * `filtered` is what ForgeOps ships: PingDS's console access logger runs
-   * `filtering-policy: inclusive` with four criteria - administrative
-   * requests, auth failures, requests over 1000 ms, and misbehaving clients.
-   * Quiet, and the right four things to be told about unprompted.
+   * `full` is the default here, and it is NOT what ForgeOps ships. ForgeOps
+   * runs PingDS's console access logger with `filtering-policy: inclusive`
+   * and four criteria - administrative requests, auth failures, requests over
+   * 1000 ms, and misbehaving clients. Quiet, and the right four things to be
+   * told about unprompted on a server you are not watching.
    *
-   * `full` turns the filter off, which is what makes PingDS appear in an
-   * ordinary `fo trace`: under the default, a healthy login produces no DS
-   * console output at all, so the DS leg of a trace is empty exactly when
-   * nothing is wrong. Measured cost: about 8 KB of DS output per PingIDM REST
-   * call, against 18 KB TOTAL over a 13-hour idle stack when filtered.
+   * On a development stack it is the wrong trade: a healthy login produces no
+   * DS console output at all, so the DS leg of a trace is empty exactly when
+   * nothing is wrong - and "show me what happened" is the whole job here.
+   * Measured cost of `full`: about 8 KB of DS output per PingIDM REST call,
+   * against 18 KB TOTAL over a 13-hour idle stack when filtered.
+   *
+   * `filtered` restores upstream's behaviour.
    */
   dsAccessDetail?: "filtered" | "full";
   /** How long VictoriaLogs keeps data. Its own `-retentionPeriod` syntax. */
@@ -152,13 +161,13 @@ const DEFAULTS = {
   idmHotReload: true,
   idmScriptRecompileMs: 1000,
   packageSources: [],
-  logs: "off",
+  logs: "victorialogs",
 } satisfies Required<StackConfig>;
 
 export const LOGS_DEFAULTS: Required<LogsOptions> = {
-  backend: "off",
+  backend: "victorialogs",
   includeHealthChecks: false,
-  dsAccessDetail: "filtered",
+  dsAccessDetail: "full",
   retention: "7d",
   diskSize: "5Gi",
 };
