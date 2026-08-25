@@ -81,4 +81,10 @@ export async function checkFo(cfg: ResolvedConfig): Promise<void> {
     ["--noEmit", "-p", join(cfg.root, "tsconfig.json")],
     { cwd: cfg.root },
   );
+  step("Testing fo");
+  // Node's own runner over the .ts sources directly - no npm dependency, and
+  // nothing to keep in step with the platform's separate test setup. These
+  // cover the pure parts of `fo`: manifest shape, config normalisation, query
+  // construction. Anything needing a cluster is verified by running it.
+  await stream("node", ["--test", "tools/fo/tests/*.test.ts"], { cwd: cfg.root });
 }

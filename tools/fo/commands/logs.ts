@@ -4,7 +4,8 @@ import { POD_SELECTOR, type Component, type ResolvedConfig } from "../config.ts"
 
 /**
  * Tier 0 of the log story (PLAN.md section 9): live multi-pod tail, zero
- * cluster footprint. Indexed search over history is the opt-in tier.
+ * cluster footprint. Indexed search over history is `fo logs search`, which
+ * needs the opt-in tier-1 store - see commands/trace.ts.
  */
 export async function logs(
   cfg: ResolvedConfig,

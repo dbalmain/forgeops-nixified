@@ -8,6 +8,7 @@ import { buildAmProfile, buildIdmProfile } from "../profile.ts";
 import { ensureSecrets } from "../secrets.ts";
 import { buildValues, renderValues } from "../values.ts";
 import { doctor } from "./doctor.ts";
+import { ensureLogStack } from "./logstore.ts";
 import { getPods, settled } from "./status.ts";
 import { info } from "./info.ts";
 import type { ResolvedConfig } from "../config.ts";
@@ -76,6 +77,14 @@ export async function up(
         cfg.secretsValuesPath,
         "--values",
         valuesPath,
+        // Helm 4 applies server-side, and `fo restart am` reaches in with
+        // `kubectl set image` to swap the config-profile image between
+        // deploys. That leaves the field owned by `kubectl-set`, and the next
+        // `fo up` fails outright with a field-ownership conflict - a converge
+        // that refuses to converge. Taking ownership back is right here:
+        // `fo` regenerates the same image tag from the same content hash, so
+        // Helm is reasserting a value it already agrees with.
+        "--force-conflicts",
         "--timeout",
         `${opts.timeoutSeconds}s`,
       ],
@@ -86,6 +95,10 @@ export async function up(
   }
 
   await waitReady(cfg, 300);
+  // After the platform, not before: the collector's field selector is
+  // namespace-scoped and the store's Ingress reuses the chart's TLS secret,
+  // so both need the chart's objects to exist first.
+  await ensureLogStack(cfg);
   info(cfg, false);
 }
 

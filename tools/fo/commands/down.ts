@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import { capture, stream } from "../lib/proc.ts";
 import { detail, ok, step } from "../lib/ui.ts";
 import { clusterExists, deleteCluster } from "../cluster/k3d.ts";
+import { removeLogStack } from "./logstore.ts";
 import type { ResolvedConfig } from "../config.ts";
 
 export async function down(
@@ -19,6 +20,11 @@ export async function down(
     ok(`cluster ${cfg.clusterName} does not exist; nothing to do`);
     return;
   }
+
+  // Before the namespace: the log collector's ClusterRole and
+  // ClusterRoleBinding are cluster-scoped, so deleting the namespace leaves
+  // them behind to accumulate one pair per env, forever.
+  removeLogStack(cfg, { quiet: true });
 
   step(`Removing namespace ${cfg.namespace}`);
   detail("the cluster and cert-manager stay, so the next `fo up` is quick");

@@ -39,6 +39,54 @@ export const ALL_COMPONENTS: Component[] = [
   "login-ui",
 ];
 
+/**
+ * The log console (PLAN.md section 9). `off` is tier 0: `fo logs` tails pods
+ * with stern and the cluster carries nothing. `victorialogs` adds the tier-1
+ * indexed store plus a Vector DaemonSet.
+ */
+export type LogsBackend = "off" | "victorialogs";
+
+export type LogsOptions = {
+  backend?: LogsBackend;
+  /**
+   * Ship the kubelet's own health-probe traffic.
+   *
+   * Off by default, and this is where the noise actually is. Measured on a
+   * 13-hour-old stack: 99% of login-ui's log lines and 96% of admin-ui's were
+   * `kube-probe` requests, against 1.4 MB per UI pod. Dropping them is the
+   * difference between a console showing what the platform did and one
+   * showing what Kubernetes asked it every ten seconds.
+   *
+   * PLAN.md proposed excluding PingDS `ldap-access` instead. Measurement said
+   * otherwise: ForgeOps ships PingDS's console access logger with
+   * `filtering-policy: inclusive` and only four criteria - administrative
+   * requests, auth failures, requests over 1000 ms, and misbehaving clients -
+   * so PingDS wrote 18 KB where each UI pod wrote 1.4 MB. Excluding it would
+   * have dropped the most useful DS signal there is to solve a volume problem
+   * upstream had already solved.
+   */
+  includeHealthChecks?: boolean;
+  /**
+   * How much PingDS puts on stdout.
+   *
+   * `filtered` is what ForgeOps ships: PingDS's console access logger runs
+   * `filtering-policy: inclusive` with four criteria - administrative
+   * requests, auth failures, requests over 1000 ms, and misbehaving clients.
+   * Quiet, and the right four things to be told about unprompted.
+   *
+   * `full` turns the filter off, which is what makes PingDS appear in an
+   * ordinary `fo trace`: under the default, a healthy login produces no DS
+   * console output at all, so the DS leg of a trace is empty exactly when
+   * nothing is wrong. Measured cost: about 8 KB of DS output per PingIDM REST
+   * call, against 18 KB TOTAL over a 13-hour idle stack when filtered.
+   */
+  dsAccessDetail?: "filtered" | "full";
+  /** How long VictoriaLogs keeps data. Its own `-retentionPeriod` syntax. */
+  retention?: string;
+  /** PersistentVolumeClaim size for the log store. */
+  diskSize?: string;
+};
+
 export type StackConfig = {
   /** Components to deploy. Defaults to all of ALL_COMPONENTS. */
   components?: Component[];
@@ -71,9 +119,16 @@ export type StackConfig = {
    * ships 60000, which makes a script edit take up to a minute to show up.
    */
   idmScriptRecompileMs?: number;
+  /**
+   * The log console. A bare string is shorthand for `{ backend: "..." }`, so
+   * turning it on really is one line in this file.
+   */
+  logs?: LogsBackend | LogsOptions;
 };
 
-export type ResolvedConfig = Required<StackConfig> & {
+export type ResolvedConfig = Required<Omit<StackConfig, "logs">> & {
+  /** Always the object form; `normalizeLogs` widens the string shorthand. */
+  logs: Required<LogsOptions>;
   env: string;
   namespace: string;
   fqdn: string;
@@ -97,7 +152,28 @@ const DEFAULTS = {
   idmHotReload: true,
   idmScriptRecompileMs: 1000,
   packageSources: [],
+  logs: "off",
 } satisfies Required<StackConfig>;
+
+export const LOGS_DEFAULTS: Required<LogsOptions> = {
+  backend: "off",
+  includeHealthChecks: false,
+  dsAccessDetail: "filtered",
+  retention: "7d",
+  diskSize: "5Gi",
+};
+
+/**
+ * Accept both `logs: "victorialogs"` and the full object, so the common case
+ * stays one word and the tuning knobs are still typed.
+ */
+export function normalizeLogs(
+  logs: LogsBackend | LogsOptions | undefined,
+): Required<LogsOptions> {
+  if (logs === undefined) return { ...LOGS_DEFAULTS };
+  if (typeof logs === "string") return { ...LOGS_DEFAULTS, backend: logs };
+  return { ...LOGS_DEFAULTS, ...stripUndefined(logs) };
+}
 
 export function root(): string {
   const r = process.env["FO_ROOT"];
@@ -134,6 +210,7 @@ export async function loadConfig(envName?: string): Promise<ResolvedConfig> {
   const src = forgeopsSrc();
   return {
     ...merged,
+    logs: normalizeLogs(user.logs),
     env,
     namespace: env,
     fqdn: merged.fqdnTemplate.replace("{env}", env),

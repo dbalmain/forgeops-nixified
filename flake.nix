@@ -14,29 +14,41 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system:
         f { inherit system; pkgs = nixpkgs.legacyPackages.${system}; });
+
+      # Everything `fo` shells out to. Pinned here so a developer's own
+      # kubectl/helm cannot change the behaviour of the stack.
+      #
+      # ONE list, used by both the `fo` wrapper and the devShell. They were
+      # two lists and had already drifted - gnutar and diffutils reached `fo`
+      # through its wrapper but were missing from the shell, so a command that
+      # worked under `fo` failed when a developer ran it by hand.
+      runtimeTools = pkgs: with pkgs; [
+        nodejs_24
+        k3d
+        kubectl
+        kubernetes-helm
+        kustomize
+        stern
+        tilt
+        jq
+        docker-client
+        # `fo config` shells out to both: tar to move config trees in and
+        # out of pods and images, diff to render `fo config diff`. Pinning
+        # them keeps the output identical to what CI sees.
+        gnutar
+        diffutils
+        # Not for running the collector - that is a container. This is the
+        # validator: `fo check` loads the generated pipeline with the real
+        # binary, because a config that parses as YAML can still be rejected
+        # by VRL at startup, and the only symptom is a collector that
+        # crash-loops after a successful deploy. nixpkgs pins the same 0.57.0
+        # the DaemonSet runs.
+        vector
+      ];
     in
     {
       packages = forAllSystems ({ pkgs, ... }:
         let
-          # Everything `fo` shells out to. Pinned here so a developer's own
-          # kubectl/helm cannot change the behaviour of the stack.
-          runtimeTools = with pkgs; [
-            nodejs_24
-            k3d
-            kubectl
-            kubernetes-helm
-            kustomize
-            stern
-            tilt
-            jq
-            docker-client
-            # `fo config` shells out to both: tar to move config trees in and
-            # out of pods and images, diff to render `fo config diff`. Pinning
-            # them keeps the output identical to what CI sees.
-            gnutar
-            diffutils
-          ];
-
           # The platform TypeScript's dependencies, built by nix straight from
           # the committed package-lock.json. This is what makes the "nix and a
           # Docker daemon" claim honest: `npm install` never runs on a
@@ -49,7 +61,7 @@
 
           fo = pkgs.writeShellApplication {
             name = "fo";
-            runtimeInputs = runtimeTools;
+            runtimeInputs = runtimeTools pkgs;
             text = ''
               # The pinned upstream ForgeOps tree: Helm chart, config-profile
               # Dockerfiles, and (later) the upstream CLI escape hatch.
@@ -83,24 +95,23 @@
 
       devShells = forAllSystems ({ pkgs, system, ... }: {
         default = pkgs.mkShell {
-          packages = [ self.packages.${system}.fo ] ++ (with pkgs; [
-            # `npm` is here to READ the lockfile and run scripts, never to
-            # install: the dependency tree comes from nix. `fo build` fails
-            # loudly if node_modules is not the store symlink.
-            nodejs_24
-            k3d
-            kubectl
-            kubernetes-helm
-            stern
-            tilt
-            jq
-          ]);
+          # The same list `fo` gets, so a command run by hand behaves the
+          # way it does inside `fo`. (`npm` comes with nodejs_24; it is here
+          # to READ the lockfile and run scripts, never to install - the
+          # dependency tree comes from nix, and `fo build` fails loudly if
+          # node_modules is not the store symlink.)
+          packages = [ self.packages.${system}.fo ] ++ runtimeTools pkgs;
 
           shellHook = ''
             # Run `fo` from the working tree, not the store copy, so editing
             # tools/fo/*.ts takes effect immediately.
             FO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
             export FO_ROOT
+
+            # The same variables the `fo` wrapper sets, for the same reason as
+            # the shared tool list above: a command run by hand in this shell
+            # should behave the way it does inside `fo`.
+            export FO_FORGEOPS_SRC="${forgeops-src}"
 
             # ESM resolution ignores NODE_PATH, so the platform TypeScript
             # needs a real node_modules NEXT TO its sources. Link the

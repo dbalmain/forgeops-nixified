@@ -161,6 +161,23 @@ export function buildValues(
   const enabled = new Set(cfg.components);
   const v: Values = {
     platform: {
+      // Applied to am, idm, ds-idrepo and ds-cts alike - `platform.env` is the
+      // one chart key that reaches all four.
+      //
+      // Every component's config carries the SAME placeholder,
+      // `&{platform.trust.transaction.header|false}`: AM and IDM in
+      // `org.forgerock.http.TrustTransactionHeader`, DS in
+      // `ds-cfg-trust-transaction-ids`. Without it each one mints its own root
+      // transaction id and a single login cannot be followed across them,
+      // which is the query the whole log tier exists to answer.
+      //
+      // This is a dev stack. In production, trusting a client-supplied
+      // X-ForgeRock-TransactionId means trusting the client to say what to
+      // correlate; you would only enable it behind a gateway that strips the
+      // header at the edge.
+      env: [
+        { name: "PLATFORM_TRUST_TRANSACTION_HEADER", value: "true" },
+      ],
       ingress: {
         className: "traefik",
         hosts: [cfg.fqdn],
@@ -195,6 +212,23 @@ export function buildValues(
     const parent = (v[key] as Record<string, unknown> | undefined) ?? {};
     v[key] = {
       ...parent,
+      // PingDS's config.ldif carries the placeholder
+      // `&{ds.log.filtering.policy|inclusive}`, so this is upstream's own
+      // switch rather than a patched config.
+      //
+      // Set in BOTH cases, including to the value that is already the
+      // default. The chart renders this key with `{{- with .Values...env }}`,
+      // which omits it entirely for an empty list - so helm's server-side
+      // apply would have nothing to assert, and switching back from `full`
+      // would leave the old value in place with `fo up` reporting success.
+      // Verified: that is exactly what happened.
+      env: [
+        {
+          name: "DS_LOG_FILTERING_POLICY",
+          value:
+            cfg.logs.dsAccessDetail === "full" ? "no-filtering" : "inclusive",
+        },
+      ],
       volumeClaimSpec: {
         storageClassName: "fast",
         accessModes: ["ReadWriteOnce"],

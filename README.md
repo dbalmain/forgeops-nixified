@@ -34,6 +34,8 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo status` | Pod readiness. |
 | `fo info` | URLs **and passwords**. `--json` for scripting. |
 | `fo logs [COMPONENT]` | Live multi-pod tail. Extra args pass through to `stern`. |
+| `fo logs search 'LOGSQL'` | Indexed search over history. Needs the log console. |
+| `fo trace TRANSACTION_ID` | One login, time-ordered, across PingAM, PingIDM and PingDS. |
 | `fo shell COMPONENT [-- CMD]` | Exec into a component's pod. |
 | `fo doctor` | Preflight: docker, DNS, ports, memory, disk. |
 | `fo token` | An OAuth2 access token for calling IDM's REST API. |
@@ -306,6 +308,106 @@ It does **not** update `RELEASE` in `tools/fo/config.ts` — the image tag is se
 by hand because the chart and the docs disagree about it (see PLAN.md) — so it
 says so and leaves it to you.
 
+## The log console
+
+Off by default, because RAM is the binding constraint on a laptop. One line in
+`fo.config.ts` turns it on:
+
+```ts
+logs: "victorialogs",
+```
+
+`fo up` then deploys VictoriaLogs and a Vector DaemonSet — about 250 Mi
+together — and `fo info` starts printing the console URL.
+
+| | |
+| --- | --- |
+| Web UI | `https://<env>.localhost/logs/` |
+| Search | `fo logs search 'component:=am AND error'` |
+| Trace | `fo trace <transactionId>` |
+
+### `fo trace` is the point
+
+PingAM, PingIDM and PingDS all write structured JSON audit events to stdout
+already. The thing that is hard to get is one login as a single list:
+
+```console
+$ fo trace fo-trace-ds-4
+
+fo-trace-ds-4  7 events across am, ds-idrepo, idm
+
+13:02:37.182  am        AM-LOGIN-MODULE-COMPLETED /0  Authentication SUCCESSFUL ["idm-resource-server"]
+13:02:37.182  am        AM-LOGIN-COMPLETED /0  Authentication SUCCESSFUL id=idm-resource-server,ou=agent,ou=am-config
+13:02:37.187  ds-idrepo DJ-LDAP /0/1  SUCCESSFUL SEARCH ou=idm-provisioning,...,ou=am-config uid=am-config,ou=admins,ou=am-config
+13:02:37.189  ds-idrepo DJ-LDAP /0/2  SUCCESSFUL SEARCH ou=idm-provisioning,...,ou=am-config uid=am-config,ou=admins,ou=am-config
+13:02:37.190  am        AM-ACCESS-OUTCOME /0  OAuth SUCCESSFUL POST https://am/am/oauth2/introspect id=idm-resource-server,...
+13:02:37.205  ds-idrepo DJ-LDAP /1  SUCCESSFUL SEARCH ou=people,ou=identities uid=admin
+13:02:37.221  idm       access  SUCCESSFUL QUERY GET https://dev.localhost/openidm/managed/user idm-provisioning
+```
+
+That is one PingIDM query, and it reads left to right: IDM asked AM to
+introspect its token, AM looked the client up in DS twice, then IDM searched DS
+for the users.
+
+Send your own id and every component will use it:
+
+```sh
+curl -k -H "X-ForgeRock-TransactionId: my-trace-1" \
+     -H "Authorization: Bearer $(fo token)" \
+     "https://dev.localhost/openidm/managed/user?_queryFilter=true"
+fo trace my-trace-1
+```
+
+The `/0`, `/0/1`, `/1` suffixes are sub-transactions: a downstream call
+**extends** the id rather than reusing it, so `fo trace` matches by prefix.
+Searching for the exact id would return the entry point and drop every call it
+made.
+
+For this to work at all, the components have to believe the header. `fo` sets
+`PLATFORM_TRUST_TRANSACTION_HEADER=true` on all of them; each one reads the
+same placeholder (`org.forgerock.http.TrustTransactionHeader` in PingAM and
+PingIDM, `ds-cfg-trust-transaction-ids` in PingDS). Without it each component
+mints its own root id and nothing correlates.
+
+### What gets shipped, and what does not
+
+Two knobs, both set from measurement rather than intuition:
+
+- **Kubelet health probes are dropped** (`includeHealthChecks: true` keeps
+  them). On a 13-hour-old stack they were **99% of login-ui's log lines and
+  96% of admin-ui's**. Keeping them means a console that mostly shows
+  Kubernetes talking to itself.
+- **PingDS logs what ForgeOps configured it to log** (`dsAccessDetail: "full"`
+  changes that). ForgeOps ships PingDS's console access logger filtered to four
+  criteria — administrative requests, auth failures, requests over 1000 ms, and
+  misbehaving clients — so it wrote **18 KB where each UI pod wrote 1.4 MB**.
+  The catch is that a *healthy* login produces no DS output at all, so the DS
+  leg of a trace is empty exactly when nothing is wrong. `"full"` fixes that at
+  roughly **8 KB of DS output per PingIDM REST call**.
+
+The collector reads from the **tail** of each log file, so the console covers
+"from when you turned it on" rather than re-ingesting the node's backlog.
+(It has to: reading from the beginning on a stack that had been up 13 hours
+OOM-killed the collector inside one second.)
+
+### Why VictoriaLogs
+
+Measured against the Rust alternatives with 50,000 ForgeRock-shaped audit
+events, one container each:
+
+| | Language | Licence | Image | Idle RSS | Query |
+| --- | --- | --- | --- | --- | --- |
+| **VictoriaLogs 1.52** | Go | Apache-2.0 | **13 MB** | **3.4 MiB** | 11 ms |
+| Quickwit 0.9 | Rust | Apache-2.0 | 103 MB | 26 MiB | 7 ms |
+| Parseable 2.8 | Rust | AGPL-3.0 | 79 MB | 37 MiB | 22 ms |
+| OpenObserve 0.92 | Rust | AGPL-3.0 | 143 MB | 254 MiB | 21 ms |
+
+All four found the target events and ship a web UI. VictoriaLogs wins on the
+axis that binds a laptop, needs no schema, and — unlike OpenObserve, which
+lowercases every field name — leaves `transactionId` spelled the way PingAM
+spells it. Quickwit wants an index and a doc mapping up front and wrote 284 MB
+for 14.5 MB of input; it is built for object storage at a scale this is not.
+
 ## Passwords are stable
 
 Every password is derived from a per-environment seed in `.fo/<env>/seed`
@@ -332,6 +434,16 @@ export default defineStack({
                "admin-ui", "end-user-ui", "login-ui"],
   fqdnTemplate: "{env}.localhost",
   dsDiskSize: "10Gi",
+
+  // Off by default. A bare string is shorthand for `{ backend: "..." }`.
+  logs: "victorialogs",
+  // logs: {
+  //   backend: "victorialogs",
+  //   includeHealthChecks: false,   // kubelet probe traffic
+  //   dsAccessDetail: "filtered",   // or "full" — see below
+  //   retention: "7d",
+  //   diskSize: "5Gi",
+  // },
 });
 ```
 
@@ -364,10 +476,10 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-Phases 1–4 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
-it, **write typed code against it**, **install examples**, and **pull live
-config back into the repo**. Still to come: the log console (Phase 4.5), docs
-and CI (Phase 5).
+Phases 1–4.5 of [PLAN.md](PLAN.md): a developer can **get** a stack,
+**change** it, **write typed code against it**, **install examples**, **pull
+live config back into the repo**, and **follow one login across all three
+components**. Still to come: docs and CI (Phase 5).
 
 Caveats worth stating plainly:
 
@@ -386,6 +498,13 @@ Caveats worth stating plainly:
   connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
   local-file mode), so an offline CSV example would need a cloud bucket or a
   Groovy scripted connector.
+- The log console has one backend, `victorialogs`. PLAN.md lists Loki as an
+  escape hatch; it is not implemented. Vector is the collector either way, so
+  adding one is a second manifest module and a second query adapter.
+- `fo` sets `PLATFORM_TRUST_TRANSACTION_HEADER=true` on every component, which
+  is what makes `fo trace` work at all. It means the stack believes a
+  client-supplied `X-ForgeRock-TransactionId`. Fine here; in production you
+  would only do that behind a gateway that strips the header at the edge.
 - `tsconfig.am.json` inherits `lib` from the PingIDM program. That list has not
   been verified against PingAM's script engine, so it may permit a method AM
   does not have.

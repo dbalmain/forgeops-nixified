@@ -1,4 +1,5 @@
 import { capture } from "../lib/proc.ts";
+import { logsUrl } from "../logstack.ts";
 import { bold, dim, heading, table } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
 
@@ -84,6 +85,11 @@ export function urls(cfg: ResolvedConfig): Array<[string, string]> {
     ["AM console", `${base}/am`],
     ["Login UI", `${base}/am/XUI`],
     ["IDM REST", `${base}/openidm`],
+    // Only when the opt-in tier is on: advertising a URL that 404s is worse
+    // than not mentioning the feature.
+    ...(cfg.logs.backend !== "off"
+      ? ([["Log console", logsUrl(cfg)]] as Array<[string, string]>)
+      : []),
   ];
 }
 

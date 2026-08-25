@@ -484,9 +484,45 @@ is *already* structured JSON on stdout. So the requirement is a store that
 
 **Why VictoriaLogs is the default opt-in rather than Loki**: one container
 instead of three, 3-4x lighter for the same job, `victorialogs` 1.52.0 is
-already in nixpkgs, and it ships `vlogscli` - so "web **and** CLI" is one
-component rather than Loki plus `logcli`. It ingests the Loki push API and OTLP,
-so moving to Loki later does not change the collector.
+already in nixpkgs, and it ingests the Loki push API and OTLP, so moving to
+Loki later does not change the collector.
+
+### D7 revisited: measured against the Rust alternatives
+
+Asked to compare lightweight alternatives, particularly Rust ones. 50,000
+ForgeRock-audit-shaped JSON events (14.5 MB), one container each, on a 22-core
+/ 30 GB Linux box. These are measurements, not vendor claims.
+
+| | Lang | Licence | Image (amd64) | RSS idle | RSS after 50k | Query by `transactionId` | Schema |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **VictoriaLogs 1.52** | Go | Apache-2.0 | **13 MB** | **3.4 MiB** | 167 MiB | 11 ms | none |
+| **Quickwit 0.9.0** | Rust | Apache-2.0 | 103 MB | 26 MiB | **156 MiB** | **7 ms** | index + doc mapping |
+| **Parseable 2.8** | Rust | AGPL-3.0 | 79 MB | 37 MiB | 413 MiB | 22 ms | stream must exist |
+| **OpenObserve 0.92.2** | Rust | AGPL-3.0 | 143 MB | 254 MiB | 300 MiB | 21 ms | none |
+
+All four found all ten target events and ship a web UI.
+
+- **Quickwit is not abandoned** - Datadog relicensed it Apache-2.0 and 0.9.0 is
+  current. The objection is scale: it rejected a 14.5 MB request (413), rejected
+  a 2-character index id, wrote **284 MB to disk for 14.5 MB of input**, and
+  wants a doc mapping up front - which cuts against the premise that PingAM and
+  PingIDM emit different field sets.
+- **OpenObserve lowercases every field name** (`transactionId` ->
+  `transactionid`). For a stack whose audit schema is camelCase that is a
+  permanent papercut in every query. It also holds **254 MiB resident before a
+  single log arrives**, 75x VictoriaLogs.
+- **Parseable** is the closest Rust match, but it stamps its own `p_timestamp`
+  as the time axis and keeps the event's `timestamp` as an ordinary column -
+  precisely wrong for ordering a trace across three components.
+- One of the original reasons was **wrong**: `vlogscli` was cited as making
+  "web and CLI" one component. It barely matters - `fo trace` calls the HTTP
+  API directly whichever backend is chosen. The real arguments are the 13 MB
+  image, the 3.4 MiB floor, and needing no schema.
+
+Caveats: single samples; Go GC and Rust allocators make "RSS after load" a soft
+comparison, so the idle figures are the firmer ones; ingest timings are not
+comparable (VictoriaLogs accepts asynchronously, Quickwit was forced to
+`commit=wait_for`).
 
 **Why it defaults off**: RAM is the binding constraint. The stack already
 requests ~6.5 Gi; on a 16 GB laptop another gigabyte is the difference between
@@ -506,9 +542,38 @@ Whichever backend is selected, `fo` must:
 Item 3 is the thing a ForgeRock developer actually wants and cannot easily get
 today. It is worth more than the console itself.
 
-**[OPEN]** DS access logs are voluminous enough to drown everything else.
+~~**[OPEN]** DS access logs are voluminous enough to drown everything else.
 Proposal: exclude them from the collector by default, behind
-`logs.includeDsAccess: true`.
+`logs.includeDsAccess: true`.~~
+
+**Answered 2026-08-25, and the premise was wrong.** Measured on a
+13-hour-old stack, by on-node log bytes per pod:
+
+| Pod | Bytes | Health-probe share of lines |
+| --- | --- | --- |
+| admin-ui | 1.39 MB | 96% |
+| end-user-ui | 1.37 MB | - |
+| login-ui | 1.36 MB | 99% |
+| am | 1.24 MB | 31% |
+| idm | 378 KB | 6% |
+| **ds-idrepo** | **17.9 KB** | - |
+| ds-cts | 14.0 KB | - |
+
+PingDS is the **quietest** component, not the loudest: ForgeOps ships its
+console access logger with `ds-cfg-filtering-policy: inclusive` and only four
+criteria - administrative requests, auth failures, requests over 1000 ms, and
+misbehaving clients. Excluding it would have dropped the most useful DS signal
+there is, to solve a volume problem upstream had already solved.
+
+The noise is the **kubelet's health probes**, and that is what `fo` drops, via
+`logs.includeHealthChecks`.
+
+A second finding falls out of the same measurement, and it cuts the other way:
+because PingDS logs so little, a *healthy* login produces no DS console output
+at all - so the DS leg of a trace is empty exactly when nothing is wrong.
+`logs.dsAccessDetail: "full"` sets `DS_LOG_FILTERING_POLICY=no-filtering`
+through PingDS's own `&{ds.log.filtering.policy|inclusive}` placeholder, at a
+measured ~8 KB of DS output per PingIDM REST call.
 
 ---
 
@@ -854,10 +919,68 @@ the export — the same reasoning that keeps `platform/` free of examples. The
 directory is produced on demand by `fo config export am`; in a real project it
 is exactly the thing to commit.
 
-### Phase 4.5 — the log console
+### Phase 4.5 — the log console — **DONE**
 
-`logs: "victorialogs"`, the Vector DaemonSet with JSON field promotion, AM's
-audit-to-stdout handler, and `fo trace`.
+`logs: "victorialogs"` in `fo.config.ts` deploys VictoriaLogs plus a Vector
+DaemonSet as plain Kubernetes objects (`tools/fo/logstack.ts`), rendered to
+`.fo/<env>/logstack.json` so what was deployed is readable. `fo up` converges
+it, and converges it **away** when the backend goes back to `off`;
+`fo down` removes the cluster-scoped RBAC a namespace delete would leave
+behind.
+
+Verified against the live stack rather than by inspection:
+
+- **`fo trace` returns one login across all three components.** One PingIDM
+  query produced 7 events across `am`, `ds-idrepo` and `idm`, reading left to
+  right: IDM asked AM to introspect its token, AM looked the client up in DS
+  twice, IDM then searched DS for the users.
+- **The prefix query earns its keep.** Sub-transactions arrived as
+  `<root>/0`, `<root>/0/1`, `<root>/0/2`, `<root>/1` - a downstream call
+  *extends* the id. An equality filter would have returned the entry point and
+  dropped every DS event and every AM introspect event.
+- **Before/after control on the trust flag.** With
+  `PLATFORM_TRUST_TRANSACTION_HEADER` unset, a supplied
+  `X-ForgeRock-TransactionId` produced **0** matching AM events; with it set,
+  **22**. Verified independently on PingIDM, and on PingDS (whose
+  `transactionId` matched the decoded LDAP `TransactionId` control exactly).
+- 16 `fo`-level tests, including one that loads the generated pipeline in the
+  **real Vector binary**.
+
+### Item 1 was already done upstream
+
+PLAN.md said `fo` must "enable PingAM's JSON audit-to-stdout handler in the
+seeded config profile". It is already on: ForgeOps' stock PingAM ships
+`realm/root/auditservice/1.0/globalconfig/default/stdout.json` with
+`JsonStdoutAuditEventHandlerFactory` enabled for the access, activity, config
+and authentication topics. PingIDM's and PingDS's are on too. Nothing to seed -
+which is fortunate, because `platform/am/config` is deliberately not committed.
+
+What was actually missing was the opposite of a handler: every component
+defaults `&{platform.trust.transaction.header|false}` to **false**, so each
+minted its own root transaction id and a login could not be followed across
+them. All four read the same placeholder, and `platform.env` is the one chart
+key that reaches all four, so `fo` sets it once.
+
+### Deviation: no Loki escape hatch
+
+Section 9 lists `logs: "loki"` as an escape hatch. Not implemented. Vector is
+the collector either way, so adding it is a second manifest module and a
+second query adapter behind `fo trace` - the seam is there, the work is not
+done.
+
+### Two bugs found by deploying, not by reading
+
+- **`fo restart am` broke the next `fo up`.** Helm 4 applies server-side;
+  `kubectl set image` left `.spec.template.spec.initContainers[custom-vol-init]
+  .image` owned by `kubectl-set`, and the next converge failed outright with a
+  field-ownership conflict. A converge that refuses to converge. Fixed with
+  `--force-conflicts`, which is right here because `fo` regenerates the same
+  content-hash tag Helm is reasserting.
+- **A chart key that is only rendered when non-empty cannot be switched off.**
+  `ds_idrepo.env` is emitted with `{{- with }}`, so an empty list produces no
+  field for server-side apply to own - and switching `dsAccessDetail` back from
+  `full` left the old value in place while `fo up` reported success. `fo` now
+  always states the value, including when it equals the default.
 
 ### Phase 5 — docs and CI
 
@@ -876,6 +999,7 @@ README quick-start, a `platform/` authoring guide, GitHub Actions running
 | **Two incompatible image tag schemes** | Medium | The docs say `8.1.1`; the chart pins `2026.3.0-1849`; they are different builds with different digests. `fo` pins the chart's scheme - that is the combination ForgeOps tested. |
 | ~~We own values generation (D2)~~ | **Mitigated** | `fo upgrade` diffs the old and new chart `values.yaml`, naming changed image repositories, added/removed image keys and removed top-level keys; `verifyImageCoverage` then fails on any image key `fo` has no decision about. Verified against 2026.2, which reported all five real differences. |
 | RAM | **Low** (was Medium) | Measured **4.4 GiB actual** for the whole stack, against 6.5 GiB of requests. A 16 GB laptop is comfortable, not marginal. macOS still needs Docker Desktop's VM raised. `fo doctor` checks and warns. |
+| **The stack trusts a client-supplied transaction id** | Low (dev only) | `fo` sets `PLATFORM_TRUST_TRANSACTION_HEADER=true` on PingAM, PingIDM and both PingDS instances, because without it `fo trace` cannot work at all — each component mints its own root id. It means a caller can dictate what its requests correlate to. Harmless on a local dev stack; in production the header must be stripped at the edge. Stated in the README, not just here. |
 | **Licensing**                                                                                                                   | Medium   | Images pull anonymously, but Ping's subscription terms govern _use_. This is a dev/eval stack; the README must say so plainly and must not imply a production path.                                                                                                          |
 | **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | **Low** (was Medium) | Pinned hard via the flake input, and `fo upgrade` now bumps it, diffs the chart and probes all seventeen pinned image refs. Residual: `RELEASE.imageTag` is still chosen by hand, because the chart and the docs name different builds and `am-config-upgrader` follows the docs' scheme rather than the chart's. |
 | **Tilt is a second daemon**                                                                                                     | ~~Low~~ **Gone** | Resolved in Phase 2 rather than mitigated: `fo up` no longer starts Tilt at all. Tilt runs only for as long as a developer keeps `fo dev` in the foreground, and `fo watch` does the same job without it.                                                                     |
@@ -906,6 +1030,7 @@ Answered 2026-08-25:
 | Keep the name `fo`? | Yes, and shadow any local `fo`; support an alias for those who want one | Section 5, "The `fo` name" |
 | Should `fo up` block on the Tilt UI? | **No** — `fo up` converges and exits; `fo dev` owns the live session | Revised in Phase 2 |
 | Log console? | Tiered, VictoriaLogs as the opt-in default | D7, section 9, Phase 4.5 |
+| Is a Rust store lighter than VictoriaLogs? | **No** — measured; nothing beat 13 MB / 3.4 MiB idle, and OpenObserve lowercases field names | D7 revisited, section 9 |
 | Replace Tilt with our own tooling? | No — keep it, and bound it so it stays replaceable | D6, section 10 |
 
 Still open, flagged **[OPEN]** in place:
@@ -914,6 +1039,8 @@ Still open, flagged **[OPEN]** in place:
    technical assumption here. Phase 0 settles it.
 2. **FQDN strategy** (section 7) — `<env>.localhost` with an `nip.io` fallback,
    pending a real resolution test on macOS.
-3. **DS access logs** in the collector (section 9) — proposal is off by default.
+3. ~~**DS access logs** in the collector (section 9)~~ — **answered
+   2026-08-25, premise disproved.** PingDS is the quietest component, not the
+   loudest; the noise is kubelet health probes. See section 9.
 4. **Where the package registry lives** (section 8.1) — in-repo until there is
    a second consumer.

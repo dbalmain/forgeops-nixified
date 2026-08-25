@@ -23,6 +23,7 @@ import {
   type ExportComponent,
 } from "./commands/config.ts";
 import { upgrade } from "./commands/upgrade.ts";
+import { logsSearch, trace } from "./commands/trace.ts";
 
 const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
@@ -32,6 +33,8 @@ ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}
   fo status [--env NAME]                   pod readiness
   fo info [--env NAME] [--json]            URLs and passwords
   fo logs [COMPONENT] [--env NAME] [...]   live tail (extra args go to stern)
+  fo logs search 'LOGSQL' [--json]         indexed search (needs the log console)
+  fo trace TRANSACTION_ID [--json]         one login, time-ordered, across AM/IDM/DS
   fo shell COMPONENT [-- CMD...]           exec into a component's pod
   fo doctor [--env NAME]                   preflight checks
   fo token [--env NAME]                    OAuth2 access token for IDM REST
@@ -74,6 +77,7 @@ type Flags = {
   check: boolean;
   noUpgrade: boolean;
   timeout: number;
+  limit: number | undefined;
   rest: string[];
   passthrough: string[];
 };
@@ -87,6 +91,7 @@ function parse(argv: string[]): Flags {
     check: false,
     noUpgrade: false,
     timeout: 900,
+    limit: undefined,
     rest: [],
     passthrough: [],
   };
@@ -114,6 +119,8 @@ function parse(argv: string[]): Flags {
       f.noUpgrade = true;
     } else if (a === "--timeout") {
       f.timeout = Number(argv[++i]);
+    } else if (a === "--limit") {
+      f.limit = Number(argv[++i]);
     } else {
       f.rest.push(a);
     }
@@ -224,7 +231,20 @@ async function main(): Promise<void> {
       await token(cfg);
       break;
     case "logs":
-      await logs(cfg, args[0], args.slice(1));
+      if (args[0] === "search") {
+        await logsSearch(cfg, args[1], {
+          json: flags.json,
+          ...(flags.limit !== undefined ? { limit: flags.limit } : {}),
+        });
+      } else {
+        await logs(cfg, args[0], args.slice(1));
+      }
+      break;
+    case "trace":
+      await trace(cfg, args[0], {
+        json: flags.json,
+        ...(flags.limit !== undefined ? { limit: flags.limit } : {}),
+      });
       break;
     case "shell": {
       const component = args[0];
