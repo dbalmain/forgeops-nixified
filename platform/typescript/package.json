@@ -1,0 +1,31 @@
+{
+  "name": "forgeops-platform-typescript",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript sources for PingIDM custom endpoints and PingAM scripted nodes. Compiled to ES5 and emitted into platform/idm/script and platform/idm/conf.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "check": "npm run type-check && npm run lint && npm test && npm run build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "node --test \"tests/**/*.test.ts\" \"tests/**/*.test.mjs\"",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.am.json && tsc --noEmit -p tsconfig.tests.json"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/parser": "^8.0.4",
+    "@babel/preset-env": "^8.0.2",
+    "@babel/traverse": "^8.0.4",
+    "@eslint/js": "^9.39.5",
+    "@hyperjump/json-schema": "^1.17.8",
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0"
+  }
+}

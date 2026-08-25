@@ -5,6 +5,7 @@ import { detail, dim, heading, step, warn } from "../lib/ui.ts";
 import { syncIdm } from "./sync.ts";
 import { runAmster } from "./amster.ts";
 import { restart } from "./restart.ts";
+import { build } from "./build.ts";
 import type { ResolvedConfig } from "../config.ts";
 
 /**
@@ -24,6 +25,22 @@ type Tier = {
 };
 
 const TIERS: Tier[] = [
+  // TypeScript only BUILDS here. The emitted files land in platform/idm/, and
+  // the two tiers below pick them up and sync - so the chain is one
+  // responsibility per tier rather than a build step that also knows how to
+  // talk to a pod.
+  {
+    name: "typescript",
+    dir: ["platform", "typescript", "src"],
+    budget: "build, then sync",
+    run: (cfg) => build(cfg),
+  },
+  {
+    name: "framework",
+    dir: ["platform", "typescript", "framework"],
+    budget: "build, then sync",
+    run: (cfg) => build(cfg),
+  },
   {
     name: "idm-conf",
     dir: ["platform", "idm", "conf"],

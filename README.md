@@ -48,6 +48,14 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo amster` | Tier 2 by hand: re-import amster config. |
 | `fo restart COMPONENT` | Tier 3 by hand: roll a component. |
 
+### TypeScript
+
+| Command | Does |
+| ------- | ---- |
+| `fo build` | Compile `platform/typescript` into `platform/idm/` and `platform/amster/`. |
+| `fo check` | Types, lint, tests, build. |
+| `fo deps` | Re-lock `platform/typescript`'s dependencies after editing its package.json. |
+
 
 `COMPONENT` is one of `am idm ds-idrepo ds-cts amster admin-ui end-user-ui
 login-ui`.
@@ -91,11 +99,15 @@ fo up --env feature-x     # https://feature-x.localhost
 Everything you author lives in `platform/` and is version controlled:
 
 ```text
-platform/idm/conf/**       IDM config JSON            tier 1  — no restart
-platform/idm/script/**     IDM scripts                tier 1  — no restart
-platform/amster/config/**  journeys, OAuth2 clients   tier 2  — job re-runs
-platform/am/config/**      PingAM file-based config   tier 3  — pod rolls
+platform/typescript/src/endpoints/**  IDM custom endpoints, in TypeScript
+platform/typescript/src/scripts/**    PingAM scripted nodes, in TypeScript
+platform/idm/conf/**                  IDM config JSON      tier 1  — no restart
+platform/amster/config/**             journeys, clients    tier 2  — job re-runs
+platform/am/config/**                 AM file-based config tier 3  — pod rolls
 ```
+
+`platform/idm/script/` and `platform/idm/conf/endpoint-*.json` are **generated**
+from the TypeScript and are gitignored — edit the `.ts`, never the output.
 
 Run `fo dev`, save a file, and the right tier fires on its own.
 
@@ -106,9 +118,10 @@ second, once your file has overwritten the defaults AM filled in. Spell out
 every field you depend on. `fo config export` (Phase 4) is the reliable way to
 get a complete file.
 
-Two demos ship in the box, so the loop is provable on a fresh clone:
-`platform/idm/script/hello.js` (a custom IDM endpoint) and
-`platform/amster/config/.../fo-demo.json` (an OAuth2 client).
+Three demos ship in the box, so the loop is provable on a fresh clone:
+`src/endpoints/hello.ts` (a typed IDM endpoint), `src/scripts/risk-check.ts` (a
+PingAM scripted decision node), and `platform/amster/.../fo-demo.json` (an
+OAuth2 client).
 
 ```sh
 curl -k -H "Authorization: Bearer $(fo token)" \
@@ -120,6 +133,46 @@ curl -k -H "Authorization: Bearer $(fo token)" \
 IDM delegates authentication to AM, so the `openidm-admin` password is **not**
 usable against `/openidm/**` — you get `authenticationId: anonymous` and a 403
 that reads like an access-control problem. `fo token` gets you a real token.
+
+## Writing TypeScript
+
+Endpoints and AM scripts are TypeScript, compiled to ES5 and emitted where each
+product expects them. `fo build` runs the whole pipeline:
+
+```text
+tsc --noEmit  →  esbuild bundle (ES2020 IIFE)  →  Babel to ES5  →  runtime-ban lint
+```
+
+Two tools because neither does both: esbuild cannot target ES5, and Babel is not
+a bundler. Nothing is emitted unless **every** step succeeds for **every**
+entry point, so a broken build never leaves half-updated output for `fo sync`
+to push.
+
+What the types buy you: handler parameters are inferred from the validators, so
+changing `v.integer({ max: 100 })` breaks the handler that relied on it at
+compile time. The `lib` is pinned to what the script engine actually provides —
+no `Proxy`, no `Reflect`, no generators — so runtime-impossible code fails to
+type-check. And you never subclass `Error`: `Reflect` is absent, which makes
+Babel's `_wrapNativeSuper` break `instanceof` silently. Use the tagged faults
+(`badRequest`, `notFound`, …) instead; a lint rule rejects the alternative.
+
+PingAM scripts are a **separate TypeScript program** (`tsconfig.am.json`),
+because AM and IDM declare colliding globals — both have a `logger`, and they
+are not the same shape.
+
+### Dependencies come from nix
+
+`platform/typescript/node_modules` is a symlink into the nix store, built from
+the committed `package-lock.json`. **`npm install` never runs on a developer
+machine**, and `fo build` refuses to run if that symlink has been replaced by a
+real directory.
+
+To add a dependency, edit `package.json` and run `fo deps`. Doing it by hand
+walks into three traps in a row, which is why the command exists: npm cannot
+write into the read-only store, the flake stops evaluating the moment
+package.json names something the lock lacks (so `nix develop` no longer works),
+and npm exits non-zero on its allow-scripts warning even when the lock was
+written correctly.
 
 ## Passwords are stable
 
@@ -178,12 +231,19 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-Phases 1 and 2 of [PLAN.md](PLAN.md): a developer can **get** a stack and
-**change** it. Still to come: the TypeScript endpoint framework (Phase 3), the
-package repository (Phase 3.5), config round-tripping and `fo upgrade`
-(Phase 4), and the log console (Phase 4.5).
+Phases 1–3 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
+it, and **write typed code against it**. Still to come: the package repository
+(Phase 3.5), config round-tripping and `fo upgrade` (Phase 4), and the log
+console (Phase 4.5).
 
-One caveat worth stating plainly: tier 3 is verified as *"roll the PingAM
-pod"*, but rebuilding an `am-config` image from `platform/am/config/` is
-unexercised, because nothing produces correctly-shaped PingAM file-based config
-until `fo config export am` lands in Phase 4.
+Two caveats worth stating plainly:
+
+- Tier 3 is verified as *"roll the PingAM pod"*, but rebuilding an `am-config`
+  image from `platform/am/config/` is unexercised, because nothing produces
+  correctly-shaped PingAM file-based config until `fo config export am` lands
+  in Phase 4.
+- The AM demo script is verified as far as *AM stores it and AM's own validator
+  accepts it*. It has not been executed in a journey, which needs a journey to
+  exist — that arrives with `example-passwordless` in Phase 3.5.
+- Managed-object types generated from `managed.json` are **not** built. They
+  need `managed.json` in the repo, which is `fo config export idm` in Phase 4.

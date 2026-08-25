@@ -13,6 +13,8 @@ import { runAmster } from "./commands/amster.ts";
 import { restart } from "./commands/restart.ts";
 import { watchLoop } from "./commands/watch.ts";
 import { dev } from "./commands/dev.ts";
+import { build, check } from "./commands/build.ts";
+import { deps } from "./commands/deps.ts";
 
 const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
@@ -32,6 +34,11 @@ ${bold("Inner loop")}
   fo sync [conf|script]                    tier 1: push IDM config into the pod   <1s
   fo amster [--env NAME]                   tier 2: re-import amster config       ~60s
   fo restart COMPONENT                     tier 3: roll a component             ~2min
+
+${bold("TypeScript")}
+  fo build [--env NAME]                    compile platform/typescript -> idm/
+  fo check [--env NAME]                    types, lint, tests, build
+  fo deps                                  re-lock platform/typescript deps
 
 ${dim("COMPONENT is one of: am idm ds-idrepo ds-cts amster admin-ui end-user-ui login-ui")}
 ${dim("--env defaults to `dev`; every env is a namespace in one shared k3d cluster.")}
@@ -129,6 +136,15 @@ async function main(): Promise<void> {
       syncIdm(cfg, only as "conf" | "script" | undefined);
       break;
     }
+    case "build":
+      await build(cfg);
+      break;
+    case "check":
+      await check(cfg);
+      break;
+    case "deps":
+      await deps(cfg);
+      break;
     case "amster":
       await runAmster(cfg, { timeoutSeconds: flags.timeout });
       break;

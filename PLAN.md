@@ -656,10 +656,60 @@ This also makes `fo down` simpler: there is no Tilt daemon whose lifetime
 `fo up` owns, which removes the "Tilt is a second daemon" risk from section 12
 rather than mitigating it.
 
-### Phase 3 — TypeScript framework
+### Phase 3 — TypeScript framework — **DONE**
 
-Port the framework, tools, tests. Seed a demo endpoint and a demo AM script.
-Wire `npm run check` into Tilt.
+The framework, tools and tests ported from `pingone-aic-manager`; a typed demo
+endpoint and a demo PingAM script; `fo build`, `fo check`, `fo deps`; and both
+`build` and `check` wired into Tilt and `fo watch`. **A developer can write
+typed code against the stack.**
+
+- **179 tests pass**, including full OpenAPI 3.1 meta-schema validation.
+- A `.ts` save reaches the running pod in **2.2 s** (1.8 s build + 0.1 s sync),
+  via tier chaining: the TypeScript tier only builds, and the existing
+  `idm-conf` / `idm-script` tiers pick the emitted files up and sync them.
+- Every route of the demo endpoint verified against the live IDM — typed
+  routing, path params, query coercion, validation faults, CREST query results.
+
+**`npm install` never runs.** `node_modules` is built by nix from the committed
+lockfile and symlinked in by the devShell; `fo build` refuses to run if that
+symlink has been replaced by a real directory. This is the piece that makes the
+"nix and a Docker daemon" claim honest rather than aspirational, and it was the
+first thing built for exactly that reason.
+
+What Phase 3 found:
+
+- **Adding a dependency is a three-trap sequence**, so it needed a command.
+  npm cannot write its bookkeeping into the read-only store; the moment
+  `package.json` names something the lock lacks the FLAKE stops evaluating, so
+  `nix develop` no longer works and you cannot reach a shell with npm in it;
+  and npm then exits non-zero on its allow-scripts warning even though the lock
+  was written correctly. `fo deps` encapsulates all three.
+- **PingAM and PingIDM globals collide.** Both declare a `logger`, and they are
+  different shapes, so AM scripts had to become a separate TypeScript program
+  (`tsconfig.am.json`) rather than another directory in the same one.
+- **An AM script id must be derived, not random.** AM keys scripts by UUID
+  while a developer names a file, so `fo` derives a stable UUIDv5 from the
+  name. A fresh id per build would create a second copy of the script in AM
+  every time, with journeys still pointing at the first.
+- **The amster import is the AM deployment route.** An AM script is a `Scripts`
+  entity with the body base64-encoded, so it deploys through tier 2 rather than
+  by syncing a file — which is why tier 2 existing already mattered.
+
+### Deviation: managed-object types are not generated
+
+The plan had managed types generated at build time from
+`platform/idm/conf/managed.json`. They are not, because that file is not in the
+repo — it lives in the PingIDM image, and getting it into `platform/` is
+`fo config export idm`, which is Phase 4. Building the generator now would mean
+shipping a code path nothing exercises, so it moves to Phase 4 where its input
+arrives.
+
+### Known gap: the AM program's `lib`
+
+`tsconfig.am.json` inherits `lib` from the endpoint program, where it was
+pinned to **PingIDM's** script-bindings matrix. That list has not been verified
+against PingAM's engine, so it may permit a method AM does not have. Recorded
+in the file itself, and the demo script sticks to what ES5 guarantees.
 
 ### Phase 3.5 — the package repository
 

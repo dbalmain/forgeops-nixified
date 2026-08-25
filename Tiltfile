@@ -11,6 +11,28 @@ fo = 'fo --env ' + fo_env
 # `fo up` has already converged the cluster by the time Tilt starts, so Tilt
 # owns only the live phase.
 
+# TypeScript only builds; the idm-conf / idm-script resources below pick the
+# emitted files up and sync them. One responsibility per resource.
+local_resource(
+    'typescript',
+    cmd = fo + ' build',
+    deps = ['platform/typescript/src', 'platform/typescript/framework'],
+    labels = ['fast'],
+    trigger_mode = TRIGGER_MODE_AUTO,
+)
+
+# Types, lint and tests. Separate from the build so a failing test shows up red
+# in the UI without also blocking the sync that would let you try a fix.
+local_resource(
+    'check',
+    cmd = fo + ' check',
+    deps = ['platform/typescript/src', 'platform/typescript/framework',
+            'platform/typescript/tests'],
+    labels = ['fast'],
+    trigger_mode = TRIGGER_MODE_AUTO,
+    auto_init = False,
+)
+
 local_resource(
     'idm-conf',
     cmd = fo + ' sync conf',
