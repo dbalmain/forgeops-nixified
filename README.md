@@ -176,7 +176,7 @@ Endpoints and AM scripts are TypeScript, compiled to ES5 and emitted where each
 product expects them. `fo build` runs the whole pipeline:
 
 ```text
-tsc --noEmit  →  esbuild bundle (ES2020 IIFE)  →  Babel to ES5  →  runtime-ban lint
+tsgo --noEmit  →  esbuild bundle (ES2020 IIFE)  →  Babel to ES5  →  runtime-ban lint
 ```
 
 Two tools because neither does both: esbuild cannot target ES5, and Babel is not

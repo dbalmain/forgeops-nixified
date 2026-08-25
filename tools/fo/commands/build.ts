@@ -76,8 +76,13 @@ export async function check(cfg: ResolvedConfig): Promise<void> {
 export async function checkFo(cfg: ResolvedConfig): Promise<void> {
   assertStoreModules(cfg);
   step("Type-checking fo");
+  // tsgo, not tsc: the TypeScript 7 native compiler. Same diagnostics on this
+  // codebase - every strict flag `fo` and the platform rely on was checked
+  // against tsc 5.9 on deliberate violations and agreed - at about a fifth of
+  // the wall clock. `typescript` stays in platform/typescript's dependencies
+  // because typescript-eslint's PARSER needs it; only the checking moved.
   await stream(
-    join(tsRoot(cfg), "node_modules", ".bin", "tsc"),
+    join(tsRoot(cfg), "node_modules", ".bin", "tsgo"),
     ["--noEmit", "-p", join(cfg.root, "tsconfig.json")],
     { cwd: cfg.root },
   );

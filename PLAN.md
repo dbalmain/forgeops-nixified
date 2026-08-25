@@ -75,7 +75,7 @@ Plus `k3d` 5.9.0, `tilt` 0.37.6, `nodejs_24` 24.19.0.
 
 ## 2. Decisions
 
-Taken 2026-08-25.
+D1-D8 taken 2026-08-25. Later decisions carry their own date in the rationale.
 
 | #   | Decision                                                                        | Rationale                                                                                                                                                                                                                  |
 | --- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -85,8 +85,11 @@ Taken 2026-08-25.
 | D4  | Stack = **AM, IDM, DS (idrepo + cts), amster, admin-ui, end-user-ui, login-ui** | IG designed for but not built.                                                                                                                                                                                             |
 | D5  | **Multiple named envs, at zero cost to people who don't use them**              | One flag, `--env NAME`, default `dev`. See §7.                                                                                                                                                                             |
 | D6 | **Keep Tilt, but make it replaceable** | Tilt is actively maintained (v0.37.7, 2026-08-15; 8 releases in 2026, still fixing `live_update` edge cases). Rebuilding `live_update` alone is 6-12 months. Tilt's costs are coupling, not capability, and coupling is fixable - see section 10. |
-| D7 | **Log console: tiered, default off** | Tier 0 (Tilt pane + `stern`) always on; VictoriaLogs opt-in via one line of `fo.config.ts`. RAM is the binding constraint. See section 9. |
+| D7 | **Log console: tiered, on by default** | Tier 0 (Tilt pane + `stern`) always on; VictoriaLogs deployed by `fo up` unless `logs: "off"`. Originally specified default-off on a RAM argument; superseded 2026-08-25 once measured - see "no Loki, and the console is on by default" in section 9. |
 | D8 | **A package repository of optional examples** | `platform/` ships empty; examples are installable packages (`fo add <pkg>`), not seed content. See section 8.1. |
+| D9 | **`fo` stays TypeScript; not ported to Rust** | Taken 2026-08-26. `fo` is an orchestrator: its own cost is 80ms, and every command is dominated by what it shells out to (k3d create, Helm converge, PingAM cold start - minutes). Rust would buy ~77ms and cost a compile step in the edit-run loop, a heavier flake, and a language split from `platform/typescript`, which is the thing `fo` exists to compile. Rust's real win here is typed JSON boundaries, taken separately - see the backlog item below. Revisit only if `fo` grows a long-lived process (a watch daemon, a TUI, volume log parsing). |
+| D10 | **Node, not bun** | Taken 2026-08-26. Bun runs the whole pipeline correctly - tsc, eslint, Babel with byte-identical output, 194/194 tests - and dropping Intel Mac support would clear the only platform objection. It is rejected on measurement: bun is 56% slower on tsc (320 -> 500ms), 17% slower on eslint, 6% slower on Babel, 15% slower on the test suite. Its 80ms -> 20ms startup win only shows up on commands that do no work. The slow stages are all third-party JS under JavaScriptCore, which is bun's weakest case and not what its own benchmarks measure. Supply-chain angle considered: bun's built-ins could displace esbuild (~27 of 269 transitive packages), but nix already builds `node_modules` from the committed lockfile with pinned hashes and never runs `npm install` on a developer machine, which is the stronger guarantee. Revisit if bun ships a downleveller that can target ES5, since Babel is 87 of the 269. |
+| D11 | **TypeScript 7 (`tsgo`) for type-checking** | Taken 2026-08-26. 1420ms -> 251ms across the three platform projects, 558ms -> 76ms for `fo` itself. Verified rather than assumed: seven deliberate violations - `erasableSyntaxOnly`, both lib-pin cases (`Object.hasOwn`, `Array#flat`), `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noPropertyAccessFromIndexSignature`, `verbatimModuleSyntax` - produce identical diagnostics under tsc 5.9 and tsgo 7, so the D3 engine-surface guarantee survives the swap. `typescript` stays a dependency because typescript-eslint's parser needs it; only the checking moved. It is a dev preview, which is an acceptable risk for a development tool and a one-line revert. |
 
 ---
 
@@ -393,7 +396,7 @@ same engine as AIC's.
 
 Carried over intact:
 
-- **Build**: `tsc --noEmit` → esbuild bundle (ES2020 IIFE) → Babel
+- **Build**: `tsgo --noEmit` → esbuild bundle (ES2020 IIFE) → Babel
   `preset-env targets: {ie:"11"}` to ES5 → lint the _generated_ file against
   IDM's runtime bans. All-or-nothing publication by atomic rename.
 - **The runtime bans**: default parameters, `const` in a loop init, trailing
@@ -1167,3 +1170,19 @@ Still open, flagged **[OPEN]** in place:
    loudest; the noise is kubelet health probes. See section 9.
 4. **Where the package registry lives** (section 8.1) — in-repo until there is
    a second consumer.
+5. **`tsgo` on aarch64-darwin** — added 2026-08-26 with D11. The
+   `importNpmLock` path is proven on x86_64-linux: it builds, honours the
+   lockfile's `cpu`/`os` gating (fetches all seven platform tarballs, installs
+   one), and the binary runs on NixOS without patchelf because Go links
+   statically. The darwin derivation **evaluates** but has never been built or
+   run — same class of gap as the macOS FQDN item above, and it should be
+   closed by the same first run on a Mac.
+
+### Backlog, not scheduled
+
+- **Narrow at the JSON boundary** (raised 2026-08-26 alongside D9). `fo` reads
+  kubectl and helm output through 11 unchecked `JSON.parse`/`as` casts, so a
+  shape change surfaces as `undefined` several frames later rather than as an
+  error at the boundary. This is the one benefit the Rust option genuinely had
+  that D9 gives up, and it is recoverable in TypeScript with hand-written
+  validators for the six shapes involved — no dependency, an hour of work.

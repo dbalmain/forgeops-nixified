@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "node --test \"tests/**/*.test.ts\" \"tests/**/*.test.mjs\"",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.am.json && tsc --noEmit -p tsconfig.tests.json"
+    "type-check": "tsgo --noEmit -p tsconfig.json && tsgo --noEmit -p tsconfig.am.json && tsgo --noEmit -p tsconfig.tests.json"
   },
   "devDependencies": {
     "@babel/core": "^8.0.1",
@@ -23,6 +23,7 @@
     "@eslint/js": "^9.39.5",
     "@hyperjump/json-schema": "^1.17.8",
     "@types/node": "^24.13.3",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "typescript": "^5.9.3",
