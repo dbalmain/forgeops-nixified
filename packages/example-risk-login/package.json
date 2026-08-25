@@ -1,0 +1,8 @@
+{
+  "name": "example-risk-login",
+  "version": "1.0.0",
+  "description": "A login journey whose routing decision is a TypeScript scripted node",
+  "requires": {
+    "components": ["am", "amster", "ds-idrepo"]
+  }
+}

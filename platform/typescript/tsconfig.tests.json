@@ -12,6 +12,7 @@
   "include": [
     "framework/**/*",
     "src/endpoints/**/*",
+    "src/tasks/**/*",
     "src/shared/**/*",
     "tests/**/*"
   ],

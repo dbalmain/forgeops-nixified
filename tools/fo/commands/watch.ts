@@ -54,6 +54,12 @@ const TIERS: Tier[] = [
     run: (cfg) => void syncIdm(cfg, "script"),
   },
   {
+    name: "idm-data",
+    dir: ["platform", "idm", "data"],
+    budget: "<1s",
+    run: (cfg) => void syncIdm(cfg, "data"),
+  },
+  {
     name: "amster",
     dir: ["platform", "amster", "config"],
     budget: "~60s",

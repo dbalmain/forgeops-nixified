@@ -1,0 +1,12 @@
+{
+  "metadata" : {
+    "realm" : "/",
+    "amsterVersion" : "&{version}",
+    "entityType" : "DataStoreDecision",
+    "entityId" : "11111111-1111-4111-8111-000000000004",
+    "pathParams" : { }
+  },
+  "data" : {
+    "_id" : "11111111-1111-4111-8111-000000000004"
+  }
+}

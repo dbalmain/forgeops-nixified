@@ -711,10 +711,63 @@ pinned to **PingIDM's** script-bindings matrix. That list has not been verified
 against PingAM's engine, so it may permit a method AM does not have. Recorded
 in the file itself, and the demo script sticks to what ES5 guarantees.
 
-### Phase 3.5 — the package repository
+### Phase 3.5 — the package repository — **DONE**
 
-`fo add|list|remove`, `.fo/packages.lock` hashing, and the first two packages
-(`example-passwordless`, `example-hr-sync`) built out of what Phase 3 proved.
+`fo add|list|remove`, `.fo/packages.lock` content hashing, and two packages.
+**A team can take an example without inheriting it.**
+
+The ownership rule is the whole design, and it is verified: a file still
+matching its recorded hash is `fo`'s; a file you edited is yours. `fo add`
+refuses to clobber it, `fo remove` leaves it and names it, and `--force` is the
+explicit way back, printing every edit it discards.
+
+**Deviation: the packages are not the two the plan named.**
+
+- `example-passwordless` → **`example-risk-login`**. A WebAuthn journey cannot
+  be verified without a browser and an authenticator, and an unverifiable
+  example is worth less than a verified one. `example-risk-login` is a real
+  journey whose Scripted Decision node is TypeScript, driven end to end over
+  REST: `normaluser` gets a session, `svc-robot` is refused. That also closes
+  Phase 3's open gap — the AM script had never actually executed in a journey.
+- `example-hr-sync` → **`example-stale-accounts`**. Blocked by the platform,
+  not by effort: the PingIDM 2026.3 image ships **only** the *cloud* CSV
+  connector, whose `storageType` accepts `Google`, `AWS` or `Azure` and has no
+  local-file mode. A local CSV feed would need a cloud bucket or a Groovy
+  scripted connector. The replacement is a scheduled PingIDM job in TypeScript,
+  which required adding `src/tasks/` to the framework — standalone IDM scripts
+  had no home, since `src/scripts/` is PingAM's.
+
+What Phase 3.5 found, all of it by running things rather than reading them:
+
+- **`fo amster` reported success for failed jobs.** `{.status.succeeded}
+  {.status.failed}` renders as `" 1"` for a failed job, and trimming that put
+  `"1"` in the succeeded slot. Every failed import had been reporting success.
+  Now parsed as JSON.
+- **`fo amster` said nothing about what it imported.** Amster SKIPS a file
+  whose entity type it does not recognise and still exits 0, so a journey
+  imported while its nodes silently did not. It now reports the entity count
+  and every error line.
+- **amster entity types are not the AM node-type names.** They drop the `Node`
+  suffix — `DataStoreDecision`, `ScriptedDecision`, `UsernameCollector` — but
+  `PageNode` keeps it. There is no rule; read the jar.
+- **Failed job pods were being deleted before anything could read them**, because
+  the chart's template uses `restartPolicy: OnFailure`. The clone now uses
+  `Never` and `backoffLimit: 0`.
+- **Three PingAM/PingIDM bindings in `am-globals.d.ts` were fiction.**
+  `nodeState.get` returns the raw value, not an `asString()` wrapper; the
+  next-gen logger is SLF4J-shaped, so `logger.message` does not exist. Both
+  compiled cleanly and failed at runtime. The file now carries the rule: do not
+  declare a member you have not seen work.
+- **PingIDM writes NANOSECOND timestamps**, and IDM's own script engine parses
+  them to `NaN`. `NaN` fails every comparison, so a stale-account check read
+  every account as stale. A job meant to flag nothing flagged everything, and
+  looked like it was working.
+- **PingIDM returns JSON `null` for a cleared property.** `description?: string`
+  type-checks a `!== undefined` guard that then throws on null.
+
+The last three are the same lesson in three costumes: a declaration that looks
+right is not evidence, and only the second run — or the positive control —
+finds it. Every example now ships a test for the coupling its build cannot see.
 
 ### Phase 4 — round-trip and upgrade
 

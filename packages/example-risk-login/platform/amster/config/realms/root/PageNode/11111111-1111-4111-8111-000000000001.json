@@ -1,0 +1,25 @@
+{
+  "metadata" : {
+    "realm" : "/",
+    "amsterVersion" : "&{version}",
+    "entityType" : "PageNode",
+    "entityId" : "11111111-1111-4111-8111-000000000001",
+    "pathParams" : { }
+  },
+  "data" : {
+    "_id" : "11111111-1111-4111-8111-000000000001",
+    "nodes" : [ {
+      "_id" : "11111111-1111-4111-8111-000000000002",
+      "nodeType" : "UsernameCollectorNode",
+      "nodeVersion" : "1.0",
+      "displayName" : "Username Collector"
+    }, {
+      "_id" : "11111111-1111-4111-8111-000000000003",
+      "nodeType" : "PasswordCollectorNode",
+      "nodeVersion" : "1.0",
+      "displayName" : "Password Collector"
+    } ],
+    "pageHeader" : { "en" : "Sign in" },
+    "pageDescription" : { "en" : "Example risk-login journey" }
+  }
+}

@@ -56,6 +56,28 @@ step, no bundler, and **no npm dependencies at all**.
 | `fo check` | Types, lint, tests, build. |
 | `fo deps` | Re-lock `platform/typescript`'s dependencies after editing its package.json. |
 
+### Packages
+
+Examples are **installable**, not seeded — a fresh checkout is not full of
+someone else's demo.
+
+| Command | Does |
+| ------- | ---- |
+| `fo list` | What's installed, what's available, and what you've edited. |
+| `fo add NAME [--force]` | Install an example into `platform/`. |
+| `fo remove NAME` | Uninstall it, keeping anything you edited. |
+
+```sh
+fo add example-risk-login       # a login journey decided by TypeScript
+fo add example-stale-accounts   # a scheduled TypeScript job
+```
+
+`fo` records the hash of every file it writes. A file that still matches is
+`fo`'s to update or delete; a file you've changed is **yours**, and `fo add`
+refuses to clobber it while `fo remove` leaves it behind and says so. `--force`
+is the way back if you want the package's version again — it names every edit
+it discards.
+
 
 `COMPONENT` is one of `am idm ds-idrepo ds-cts amster admin-ui end-user-ui
 login-ui`.
@@ -118,10 +140,9 @@ second, once your file has overwritten the defaults AM filled in. Spell out
 every field you depend on. `fo config export` (Phase 4) is the reliable way to
 get a complete file.
 
-Three demos ship in the box, so the loop is provable on a fresh clone:
-`src/endpoints/hello.ts` (a typed IDM endpoint), `src/scripts/risk-check.ts` (a
-PingAM scripted decision node), and `platform/amster/.../fo-demo.json` (an
-OAuth2 client).
+One demo is seeded so the loop is provable on a fresh clone —
+`src/endpoints/hello.ts`, a typed IDM endpoint. Everything else is a package;
+see `fo list`.
 
 ```sh
 curl -k -H "Authorization: Bearer $(fo token)" \
@@ -231,10 +252,10 @@ PLAN.md              the design, decisions and roadmap
 
 ## Status
 
-Phases 1–3 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
-it, and **write typed code against it**. Still to come: the package repository
-(Phase 3.5), config round-tripping and `fo upgrade` (Phase 4), and the log
-console (Phase 4.5).
+Phases 1–3.5 of [PLAN.md](PLAN.md): a developer can **get** a stack, **change**
+it, **write typed code against it**, and **install examples**. Still to come:
+config round-tripping and `fo upgrade` (Phase 4), and the log console
+(Phase 4.5).
 
 Two caveats worth stating plainly:
 
@@ -242,8 +263,11 @@ Two caveats worth stating plainly:
   image from `platform/am/config/` is unexercised, because nothing produces
   correctly-shaped PingAM file-based config until `fo config export am` lands
   in Phase 4.
-- The AM demo script is verified as far as *AM stores it and AM's own validator
-  accepts it*. It has not been executed in a journey, which needs a journey to
-  exist — that arrives with `example-passwordless` in Phase 3.5.
 - Managed-object types generated from `managed.json` are **not** built. They
   need `managed.json` in the repo, which is `fo config export idm` in Phase 4.
+  Until then, `openidm.query`'s typed three-argument field projection is
+  unusable and you pass `_fields` as a string instead.
+- There is no CSV-feed example. The PingIDM image ships only a **cloud** CSV
+  connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
+  local-file mode), so an offline CSV example would need a cloud bucket or a
+  Groovy scripted connector.

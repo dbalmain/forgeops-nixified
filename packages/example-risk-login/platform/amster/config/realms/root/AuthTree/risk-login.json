@@ -1,0 +1,51 @@
+{
+  "metadata" : {
+    "realm" : "/",
+    "amsterVersion" : "&{version}",
+    "entityType" : "AuthTree",
+    "entityId" : "risk-login",
+    "pathParams" : { }
+  },
+  "data" : {
+    "_id" : "risk-login",
+    "description" : "Example: a TypeScript scripted node decides the outcome",
+    "enabled" : true,
+    "innerTreeOnly" : false,
+    "noSession" : false,
+    "mustRun" : false,
+    "transactionalOnly" : false,
+    "uiConfig" : { "categories" : "[\"Examples\"]" },
+    "entryNodeId" : "11111111-1111-4111-8111-000000000001",
+    "nodes" : {
+      "11111111-1111-4111-8111-000000000001" : {
+        "displayName" : "Sign in",
+        "nodeType" : "PageNode",
+        "x" : 130, "y" : 60,
+        "connections" : { "outcome" : "11111111-1111-4111-8111-000000000004" },
+        "version" : "1.0"
+      },
+      "11111111-1111-4111-8111-000000000004" : {
+        "displayName" : "Data Store Decision",
+        "nodeType" : "DataStoreDecisionNode",
+        "x" : 330, "y" : 60,
+        "connections" : { "true" : "11111111-1111-4111-8111-000000000005", "false" : "e301438c-0bd0-429c-ab0c-66126501069a" },
+        "version" : "1.0"
+      },
+      "11111111-1111-4111-8111-000000000005" : {
+        "displayName" : "Risk check (TypeScript)",
+        "nodeType" : "ScriptedDecisionNode",
+        "x" : 540, "y" : 60,
+        "connections" : {
+          "low" : "70e691a5-1e33-4ac3-a356-e7b6d60d92e0",
+          "high" : "e301438c-0bd0-429c-ab0c-66126501069a"
+        },
+        "version" : "1.0"
+      }
+    },
+    "staticNodes" : {
+      "startNode" : { "x" : 50, "y" : 25 },
+      "70e691a5-1e33-4ac3-a356-e7b6d60d92e0" : { "x" : 760, "y" : 40 },
+      "e301438c-0bd0-429c-ab0c-66126501069a" : { "x" : 760, "y" : 140 }
+    }
+  }
+}

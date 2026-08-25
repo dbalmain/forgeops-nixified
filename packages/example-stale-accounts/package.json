@@ -1,0 +1,8 @@
+{
+  "name": "example-stale-accounts",
+  "version": "1.0.0",
+  "description": "A scheduled PingIDM job, written in TypeScript, that flags dormant accounts",
+  "requires": {
+    "components": ["idm", "ds-idrepo"]
+  }
+}

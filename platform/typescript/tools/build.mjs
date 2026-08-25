@@ -41,6 +41,9 @@ const workspaceRoot = resolve(projectRoot, "..");
 
 const endpointsDir = join(projectRoot, "src", "endpoints");
 const scriptsDir = join(projectRoot, "src", "scripts");
+// Standalone PingIDM scripts. Same globals and same output directory as an
+// endpoint's bundle, but no routing and no conf/ binding.
+const tasksDir = join(projectRoot, "src", "tasks");
 // PingAM scripts deploy as amster entities, not as files in a pod, so they
 // land in the tier-2 tree rather than under idm/.
 const amScriptsDir = join(
@@ -259,6 +262,57 @@ async function buildEndpoint(entry) {
   };
 }
 
+function taskEntryPoints() {
+  if (!existsSync(tasksDir)) {
+    return [];
+  }
+  return readdirSync(tasksDir)
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".d.ts"))
+    .sort()
+    .map((name) => join(tasksDir, name));
+}
+
+async function buildTask(entry) {
+  const fileName = basename(entry, ".ts");
+  const esm = await bundle(entry, "esm", undefined);
+  mkdirSync(join(distDir, "meta"), { recursive: true });
+  const metaPath = join(distDir, "meta", "task-" + fileName + ".mjs");
+  writeFileSync(metaPath, esm, "utf8");
+  const module = await import(
+    pathToFileURL(metaPath).href + "?t=" + Date.now()
+  );
+  const main = module.default;
+  if (typeof main !== "function" || typeof main.definition !== "object") {
+    throw new Error(
+      relative(projectRoot, entry) +
+        ": default export must be the value returned by defineTask()"
+    );
+  }
+  if (main.definition.name !== fileName) {
+    throw new Error(
+      relative(projectRoot, entry) +
+        ': task name "' + main.definition.name +
+        '" must match the file name "' + fileName + '"'
+    );
+  }
+  const iife = await bundle(entry, "iife", GLOBAL_NAME);
+  const code = downlevel(iife, fileName);
+  const violations = findRuntimeBanViolations(code);
+  if (violations.length > 0) {
+    throw new Error(
+      fileName + ": generated bundle breaks IDM runtime rules\n" +
+        violations.map((v) => "  line " + v.line + " [" + v.rule + "] " + v.message).join("\n")
+    );
+  }
+  const sourceRelative = "typescript/" + relative(projectRoot, entry);
+  return {
+    name: fileName,
+    definition: main.definition,
+    sourceRelative,
+    code: banner(fileName, sourceRelative) + code + footer(),
+  };
+}
+
 function amEntryPoints() {
   if (!existsSync(scriptsDir)) {
     return [];
@@ -399,9 +453,44 @@ function retireRemovedAmScripts(previousNames, built) {
   }
 }
 
-function writeManifest(built, amBuilt) {
+function previouslyOwnedNames(key) {
+  if (!existsSync(manifestPath)) {
+    return [];
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (!Array.isArray(manifest[key])) {
+      return [];
+    }
+    return manifest[key]
+      .map((entry) => entry?.name)
+      .filter(
+        (name) =>
+          typeof name === "string" && /^[A-Za-z0-9._-]+$/.test(name) &&
+          name !== "." && name !== ".."
+      );
+  } catch {
+    return [];
+  }
+}
+
+function retireRemovedTasks(previousNames, built) {
+  const current = new Set(built.map((task) => task.name));
+  for (const name of previousNames) {
+    if (!current.has(name)) {
+      rmSync(join(outputDir, name + ".js"), { force: true });
+    }
+  }
+}
+
+function writeManifest(built, amBuilt, taskBuilt) {
   const manifest = {
     version: 1,
+    tasks: taskBuilt.map((task) => ({
+      name: task.name,
+      source: task.sourceRelative,
+      file: "idm/script/" + task.name + ".js",
+    })),
     amScripts: amBuilt.map((script) => ({
       name: script.name,
       id: scriptUuid(script.name),
@@ -503,6 +592,7 @@ async function run() {
   const entries = entryPoints();
   const previousNames = previouslyOwnedEndpointNames();
   const previousAmNames = previouslyOwnedAmScriptNames();
+  const previousTaskNames = previouslyOwnedNames("tasks");
   // AN ABSENT `src/endpoints` IS NOT AN EMPTY ONE. Retirement deletes every
   // bundle the previous manifest owned, so it must be driven by a project that
   // says "no endpoints", not by a directory that happens not to be there right
@@ -525,6 +615,10 @@ async function run() {
   for (const entry of entries) {
     built.push(await buildEndpoint(entry));
   }
+  const taskBuilt = [];
+  for (const entry of taskEntryPoints()) {
+    taskBuilt.push(await buildTask(entry));
+  }
   const amBuilt = [];
   for (const entry of amEntryPoints()) {
     amBuilt.push(await buildAmScript(entry));
@@ -545,7 +639,7 @@ async function run() {
   if (amScripts.length > 0) {
     mkdirSync(amScriptsDir, { recursive: true });
   }
-  for (const endpoint of built) {
+  for (const endpoint of [...built, ...taskBuilt]) {
     atomicWrite(join(outputDir, endpoint.name + ".js"), endpoint.code);
   }
   for (const output of [...confs, ...openApi, ...amScripts]) {
@@ -553,10 +647,17 @@ async function run() {
   }
   retireRemovedEndpoints(previousNames, built);
   retireRemovedAmScripts(previousAmNames, amBuilt);
-  writeManifest(built, amBuilt);
+  retireRemovedTasks(previousTaskNames, taskBuilt);
+  writeManifest(built, amBuilt, taskBuilt);
 
   if (built.length === 0) {
     console.log("no endpoints in src/endpoints — retired generated endpoints");
+  }
+
+  for (const task of taskBuilt) {
+    console.log(
+      "built " + task.name + " (IDM task) -> idm/script/" + task.name + ".js"
+    );
   }
 
   for (const script of amBuilt) {

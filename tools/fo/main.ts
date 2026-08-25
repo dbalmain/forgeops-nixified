@@ -15,6 +15,7 @@ import { watchLoop } from "./commands/watch.ts";
 import { dev } from "./commands/dev.ts";
 import { build, check } from "./commands/build.ts";
 import { deps } from "./commands/deps.ts";
+import { add, list, remove } from "./commands/pkg.ts";
 
 const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
@@ -31,7 +32,7 @@ ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}
 ${bold("Inner loop")}
   fo dev [--env NAME] [--no-tilt]          live session: watch and apply changes
   fo watch [--env NAME]                    the same loop without Tilt
-  fo sync [conf|script]                    tier 1: push IDM config into the pod   <1s
+  fo sync [conf|script|data]               tier 1: push IDM config into the pod   <1s
   fo amster [--env NAME]                   tier 2: re-import amster config       ~60s
   fo restart COMPONENT                     tier 3: roll a component             ~2min
 
@@ -39,6 +40,11 @@ ${bold("TypeScript")}
   fo build [--env NAME]                    compile platform/typescript -> idm/
   fo check [--env NAME]                    types, lint, tests, build
   fo deps                                  re-lock platform/typescript deps
+
+${bold("Packages")}
+  fo list                                  installed and available examples
+  fo add NAME [--force]                    install an example into platform/
+  fo remove NAME                           uninstall it, keeping anything you edited
 
 ${dim("COMPONENT is one of: am idm ds-idrepo ds-cts amster admin-ui end-user-ui login-ui")}
 ${dim("--env defaults to `dev`; every env is a namespace in one shared k3d cluster.")}
@@ -49,6 +55,7 @@ type Flags = {
   json: boolean;
   destroy: boolean;
   noTilt: boolean;
+  force: boolean;
   timeout: number;
   rest: string[];
   passthrough: string[];
@@ -59,6 +66,7 @@ function parse(argv: string[]): Flags {
     json: false,
     destroy: false,
     noTilt: false,
+    force: false,
     timeout: 900,
     rest: [],
     passthrough: [],
@@ -79,6 +87,8 @@ function parse(argv: string[]): Flags {
       f.destroy = true;
     } else if (a === "--no-tilt") {
       f.noTilt = true;
+    } else if (a === "--force") {
+      f.force = true;
     } else if (a === "--timeout") {
       f.timeout = Number(argv[++i]);
     } else {
@@ -130,10 +140,10 @@ async function main(): Promise<void> {
       break;
     case "sync": {
       const only = args[0];
-      if (only && only !== "conf" && only !== "script") {
-        die(`fo sync takes "conf" or "script", not "${only}"`);
+      if (only && !["conf", "script", "data"].includes(only)) {
+        die(`fo sync takes "conf", "script" or "data", not "${only}"`);
       }
-      syncIdm(cfg, only as "conf" | "script" | undefined);
+      syncIdm(cfg, only as "conf" | "script" | "data" | undefined);
       break;
     }
     case "build":
@@ -144,6 +154,15 @@ async function main(): Promise<void> {
       break;
     case "deps":
       await deps(cfg);
+      break;
+    case "add":
+      add(cfg, args[0], { force: flags.force });
+      break;
+    case "list":
+      list(cfg);
+      break;
+    case "remove":
+      remove(cfg, args[0]);
       break;
     case "amster":
       await runAmster(cfg, { timeoutSeconds: flags.timeout });

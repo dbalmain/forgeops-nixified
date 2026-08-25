@@ -29,6 +29,14 @@ function targets(cfg: ResolvedConfig): Target[] {
       local: join(cfg.root, "platform", "idm", "script"),
       remote: "/opt/openidm/script",
     },
+    {
+      // Sample data a connector reads from disk, e.g. a CSV an example syncs
+      // from. NOT a mount, so a pod restart loses it until the next sync -
+      // which is fine for sample data and wrong for anything else.
+      name: "data",
+      local: join(cfg.root, "platform", "idm", "data"),
+      remote: "/opt/openidm/data",
+    },
   ];
 }
 
@@ -48,7 +56,7 @@ function fileCount(dir: string): number {
  */
 export function syncIdm(
   cfg: ResolvedConfig,
-  only?: "conf" | "script",
+  only?: "conf" | "script" | "data",
 ): boolean {
   const pod = podName(cfg, "app=idm");
   if (!pod) {
@@ -69,7 +77,10 @@ export function syncIdm(
       "sh",
       [
         "-c",
-        `tar -C ${q(t.local)} -cf - . | ` +
+        // mkdir first: `data` is not one of the image's directories.
+        `kubectl -n ${q(cfg.namespace)} exec ${q(pod)} -c openidm -- ` +
+          `mkdir -p ${q(t.remote)} && ` +
+          `tar -C ${q(t.local)} -cf - . | ` +
           `kubectl -n ${q(cfg.namespace)} exec -i ${q(pod)} -c openidm -- ` +
           `tar -C ${q(t.remote)} -xf -`,
       ],

@@ -60,6 +60,51 @@ export function packAmsterConfig(cfg: ResolvedConfig): boolean {
 }
 
 /**
+ * Say what amster actually did.
+ *
+ * Without this the command reports success and tells you nothing: amster
+ * SKIPS a file whose entity type it does not recognise and still exits 0, so a
+ * journey can import while the nodes it references silently do not, and the
+ * first sign of trouble is a 401 and `Node did not exist` buried in AM's log.
+ */
+function reportImport(cfg: ResolvedConfig, jobName: string): void {
+  // By pod, not `job/<name>`: `kubectl logs job/x` waits for a RUNNING pod and
+  // times out the moment the job has finished, which is exactly when we want
+  // to read it.
+  const pods = capture(
+    "kubectl",
+    ns(cfg, [
+      "get", "pod",
+      "-l", `batch.kubernetes.io/job-name=${jobName}`,
+      "-o", "jsonpath={.items[*].metadata.name}",
+    ]),
+    { env: kubeEnv(cfg), allowFailure: true },
+  ).stdout.trim();
+  if (!pods) {
+    detail("the job's pod is gone, so there is no import log to show");
+    return;
+  }
+  const log = capture(
+    "kubectl",
+    ns(cfg, ["logs", pods.split(/\s+/)[0]!, "-c", "amster"]),
+    { env: kubeEnv(cfg), allowFailure: true },
+  ).stdout;
+  if (!log) return;
+
+  const imported = log.match(/^Imported .*$/gm) ?? [];
+  const problems = (log.match(/^.*(ERROR|Unable to|Unknown|failed).*$/gim) ?? [])
+    .filter((l) => !/^Imported /.test(l))
+    .slice(0, 10);
+
+  if (imported.length > 0) {
+    detail(`amster imported ${imported.length} entities`);
+  }
+  for (const problem of problems) {
+    warn(problem.trim().slice(0, 200));
+  }
+}
+
+/**
  * Clone the existing amster Job under a fresh name and run it.
  *
  * The Job is a Helm post-install hook, so it cannot simply be restarted: a
@@ -94,7 +139,14 @@ export async function runAmster(
 
   const name = `${JOB}-fo-${Date.now().toString(36)}`;
   const spec = template["spec"] as Record<string, unknown>;
-  const pod = spec["template"] as { metadata: { labels?: Record<string, string> } };
+  const pod = spec["template"] as {
+    metadata: { labels?: Record<string, string> };
+    spec: Record<string, unknown>;
+  };
+  // The chart's template uses OnFailure, which makes the job controller DELETE
+  // the pod once the backoff limit is hit - taking the log that says why the
+  // import failed with it. `Never` keeps the failed pod for inspection.
+  pod.spec["restartPolicy"] = "Never";
   for (const k of [
     "controller-uid",
     "batch.kubernetes.io/controller-uid",
@@ -108,8 +160,10 @@ export async function runAmster(
     kind: "Job",
     metadata: { name, namespace: cfg.namespace, labels: { app: "amster", "fo/rerun": "true" } },
     spec: {
-      backoffLimit: spec["backoffLimit"],
-      ttlSecondsAfterFinished: 600,
+      // One attempt. A rejected import fails the same way six times, and each
+      // retry destroys the pod whose log says why.
+      backoffLimit: 0,
+      ttlSecondsAfterFinished: 900,
       template: pod,
     },
   };
@@ -122,19 +176,32 @@ export async function runAmster(
 
   const deadline = Date.now() + opts.timeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const r = capture(
-      "kubectl",
-      ns(cfg, ["get", "job", name, "-o", "jsonpath={.status.succeeded} {.status.failed}"]),
-      { env: kubeEnv(cfg), allowFailure: true },
-    );
-    const [succeeded, failed] = r.stdout.trim().split(/\s+/);
-    if (succeeded === "1") {
+    // Read the whole status as JSON rather than two jsonpath fields joined by
+    // a space: `{.status.succeeded} {.status.failed}` renders as " 1" for a
+    // FAILED job, and trimming that leaves "1" in the succeeded slot. That
+    // made every failed import report success.
+    const r = capture("kubectl", ns(cfg, ["get", "job", name, "-o", "json"]), {
+      env: kubeEnv(cfg),
+      allowFailure: true,
+    });
+    let status: { succeeded?: number; failed?: number } = {};
+    try {
+      status = (JSON.parse(r.stdout) as { status?: typeof status }).status ?? {};
+    } catch {
+      await sleep(3000);
+      continue;
+    }
+    if ((status.succeeded ?? 0) > 0) {
+      reportImport(cfg, name);
       ok("amster import complete");
       return;
     }
-    if (failed && Number(failed) > 0) {
-      warn(`job/${name} failed; see: fo logs amster`);
-      return;
+    if ((status.failed ?? 0) > 0) {
+      reportImport(cfg, name);
+      throw new Error(
+        `amster job/${name} failed. Its pod is usually gone by now; ` +
+          `re-run with the job kept: kubectl -n ${cfg.namespace} get job ${name}`,
+      );
     }
     await sleep(3000);
   }

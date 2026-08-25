@@ -1,0 +1,16 @@
+{
+  "//": "Runs flag-stale-accounts nightly at 02:00. Trigger it by hand instead with: POST /openidm/script/?_action=eval on script/flag-stale-accounts.js, or set enabled to false while you are experimenting.",
+  "enabled": true,
+  "type": "cron",
+  "schedule": "0 0 2 * * ?",
+  "persisted": true,
+  "misfirePolicy": "doNothing",
+  "concurrentExecution": false,
+  "invokeService": "script",
+  "invokeContext": {
+    "script": {
+      "type": "text/javascript",
+      "file": "flag-stale-accounts.js"
+    }
+  }
+}

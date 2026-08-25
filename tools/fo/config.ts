@@ -55,6 +55,12 @@ export type StackConfig = {
   /** Persistent volume size for each DS instance. */
   dsDiskSize?: string;
   /**
+   * Extra directories to look in for packages, after this repo's `packages/`.
+   * Paths only - nothing is fetched over the network, so a third-party source
+   * is something you wrote down deliberately.
+   */
+  packageSources?: string[];
+  /**
    * Turn IDM's file watcher on so config synced into a running pod reloads.
    * ForgeOps ships this OFF; without it the inner loop does not work at all.
    * Never enable this in production. See spike/RESULTS.md, finding 1.
@@ -90,6 +96,7 @@ const DEFAULTS = {
   dsDiskSize: "10Gi",
   idmHotReload: true,
   idmScriptRecompileMs: 1000,
+  packageSources: [],
 } satisfies Required<StackConfig>;
 
 export function root(): string {
