@@ -1,14 +1,21 @@
 import { capture } from "../lib/proc.ts";
+import { arrayOf, bool, decode, num, obj, opt, str } from "../lib/shape.ts";
 import { dim, green, heading, red, table, yellow } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
 
-type Pod = {
-  metadata: { name: string };
-  status: {
-    phase: string;
-    containerStatuses?: Array<{ ready: boolean; restartCount: number }>;
-  };
-};
+const POD_LIST = obj({
+  items: arrayOf(
+    obj({
+      metadata: obj({ name: str }),
+      status: obj({
+        phase: str,
+        containerStatuses: opt(arrayOf(obj({ ready: bool, restartCount: num }))),
+      }),
+    }),
+  ),
+});
+
+export type Pod = ReturnType<typeof POD_LIST>["items"][number];
 
 export function getPods(cfg: ResolvedConfig): Pod[] {
   const r = capture(
@@ -16,12 +23,12 @@ export function getPods(cfg: ResolvedConfig): Pod[] {
     ["-n", cfg.namespace, "get", "pods", "-o", "json"],
     { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
   );
+  // A non-zero exit is the ordinary "nothing deployed yet" case and stays
+  // quiet. Output we cannot read is NOT that case, and used to be swallowed
+  // into the same empty list - so `fo status` would report an empty cluster
+  // and `waitReady` would wait for pods it could no longer see.
   if (r.code !== 0) return [];
-  try {
-    return (JSON.parse(r.stdout) as { items: Pod[] }).items;
-  } catch {
-    return [];
-  }
+  return decode(r.stdout, "kubectl get pods", POD_LIST).items;
 }
 
 /** A pod is settled when it is Running and ready, or has Succeeded (a Job). */

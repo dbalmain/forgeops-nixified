@@ -1,3 +1,4 @@
+import { anyObject, decode } from "../lib/shape.ts";
 import { fetchIngress } from "../lib/http.ts";
 import { bold, cyan, die, dim, warn, yellow } from "../lib/ui.ts";
 import { readSecret } from "./info.ts";
@@ -70,7 +71,7 @@ export async function queryLogs(
   return res.body
     .split("\n")
     .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as LogEvent);
+    .map((l, i) => decode(l, `log store event ${i + 1}`, anyObject));
 }
 
 function str(e: LogEvent, key: string): string {

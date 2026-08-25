@@ -1158,6 +1158,38 @@ runner's resolver, which is a CI crutch and says so.
 
 ---
 
+### Phase 6.2 — narrow the JSON boundaries — **DONE**
+
+The one benefit the Rust option had that D9 gave up, taken in TypeScript:
+`tools/fo/lib/shape.ts`, about a hundred lines, no dependency.
+
+**The bug it was really about.** `getPods` and `clusterExists` both wrapped
+their parse in a `try/catch` that returned "nothing" — so a kubectl or k3d
+shape change would have made `fo status` report an empty cluster and
+`clusterExists` answer *false*, sending `fo up` to create a cluster that
+already existed. Silent, and wrong in a direction that does damage. The
+validators exist to separate the two cases that `catch` conflated: the command
+**failed** (ordinary — nothing deployed yet, no cluster, job not created) and
+the command **succeeded but said something we do not understand** (a bug,
+worth a loud error naming the field that moved).
+
+Applied at every boundary whose shape belongs to somebody else — kubectl pods
+and jobs, k3d cluster list, `nix flake archive`, PingAM authenticate, PingIDM
+token and script eval, VictoriaLogs events. Deliberately **not** applied to
+`flake.lock`, `.fo/packages.lock`, package manifests or
+`engine-surface.json`: those are ours, so a shape change there is a bug we
+introduced and the tests catch it.
+
+Unlisted fields pass through unchecked. These payloads belong to Kubernetes;
+objecting to a field it added would break `fo` on an upgrade that changed
+nothing we use.
+
+Twelve tests, including the messages themselves — a renamed field must name
+the path that moved, a wrong type must not be coerced, non-JSON must name the
+source, and an error must stay readable rather than dumping a 5 KB payload.
+
+---
+
 ## 12. Risks
 
 | Risk                                                                                                                            | Severity | Mitigation                                                                                                                                                                                                                                                                   |
@@ -1223,9 +1255,4 @@ Still open, flagged **[OPEN]** in place:
 
 ### Backlog, not scheduled
 
-- **Narrow at the JSON boundary** (raised 2026-08-26 alongside D9). `fo` reads
-  kubectl and helm output through 11 unchecked `JSON.parse`/`as` casts, so a
-  shape change surfaces as `undefined` several frames later rather than as an
-  error at the boundary. This is the one benefit the Rust option genuinely had
-  that D9 gives up, and it is recoverable in TypeScript with hand-written
-  validators for the six shapes involved — no dependency, an hour of work.
+- ~~**Narrow at the JSON boundary**~~ — **done 2026-08-26**, see Phase 6.2.

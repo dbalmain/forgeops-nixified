@@ -107,6 +107,16 @@ jobs:
             exit 1
           '
 
+      # The engine surface is a MEASUREMENT, and this is the only job that has
+      # a running stack to re-take it against. An upstream image bump can
+      # change the Rhino build underneath framework/engine-surface.json while
+      # every other gate stays green - the tsconfig `lib` pin would then
+      # describe an engine that no longer exists, and the first symptom would
+      # be a TypeError in somebody's login. Cheap: two REST round-trips and a
+      # scripted decision that removes itself.
+      - name: engine surface still matches what the lib pin claims
+        run: nix develop --command fo doctor --engines
+
       - name: diagnostics on failure
         if: failure()
         run: |

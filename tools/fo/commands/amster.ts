@@ -1,3 +1,4 @@
+import { anyObject, arrayOf, decode, num, obj, opt } from "../lib/shape.ts";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { capture, sleep } from "../lib/proc.ts";
@@ -119,6 +120,11 @@ function reportImport(cfg: ResolvedConfig, jobName: string): string {
  * `fo add example-risk-login && fo build && fo amster` fails here every time -
  * which is the exact sequence the package README tells you to run.
  */
+const JOB_LIST = obj({ items: arrayOf(anyObject) });
+const JOB_STATUS = obj({
+  status: opt(obj({ succeeded: opt(num), failed: opt(num) })),
+});
+
 export function looksLikeForwardReference(log: string): boolean {
   return /Data validation failed for the attribute/i.test(log);
 }
@@ -170,14 +176,13 @@ async function runImportJob(
     ns(cfg, ["get", "job", "-l", "app=amster", "-o", "json"]),
     { env: kubeEnv(cfg), allowFailure: true },
   );
-  let template: Record<string, unknown> | undefined;
-  try {
-    const items = (JSON.parse(src.stdout) as { items: Array<Record<string, unknown>> })
-      .items;
-    template = items[items.length - 1];
-  } catch {
-    /* fall through */
-  }
+  // An empty list is the ordinary "nothing to clone" case and falls through to
+  // the warning below; unreadable output is not, and says so.
+  const items =
+    src.code === 0
+      ? decode(src.stdout, "kubectl get job -l app=amster", JOB_LIST).items
+      : [];
+  const template: Record<string, unknown> | undefined = items[items.length - 1];
   if (!template) {
     warn("no existing amster job to clone; run `fo up` first");
     return { state: "timeout", log: "" };
@@ -230,13 +235,16 @@ async function runImportJob(
       env: kubeEnv(cfg),
       allowFailure: true,
     });
-    let status: { succeeded?: number; failed?: number } = {};
-    try {
-      status = (JSON.parse(r.stdout) as { status?: typeof status }).status ?? {};
-    } catch {
+    // A non-zero exit means the job is not visible yet - keep waiting. Output
+    // we cannot read is a different thing and is allowed to throw: retrying it
+    // just burns the timeout and then reports "still running", which points at
+    // the job rather than at us.
+    if (r.code !== 0) {
       await sleep(3000);
       continue;
     }
+    const status = decode(r.stdout, `kubectl get job ${name}`, JOB_STATUS)
+      .status ?? { succeeded: undefined, failed: undefined };
     if ((status.succeeded ?? 0) > 0) {
       const log = reportImport(cfg, name);
       ok("amster import complete");

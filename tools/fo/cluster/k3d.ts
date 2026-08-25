@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { arrayOf, decode, obj, str } from "../lib/shape.ts";
 import { capture, stream } from "../lib/proc.ts";
 import { detail, ok, step } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
@@ -15,13 +16,12 @@ export function clusterExists(name: string): boolean {
   const r = capture("k3d", ["cluster", "list", "-o", "json"], {
     allowFailure: true,
   });
+  // No cluster at all is a legitimate answer and exits non-zero. Output we
+  // cannot read is not: answering `false` there would send `fo up` to create
+  // a cluster that already exists.
   if (r.code !== 0) return false;
-  try {
-    const list = JSON.parse(r.stdout) as Array<{ name: string }>;
-    return list.some((c) => c.name === name);
-  } catch {
-    return false;
-  }
+  const list = decode(r.stdout, "k3d cluster list", arrayOf(obj({ name: str })));
+  return list.some((c) => c.name === name);
 }
 
 export async function ensureCluster(cfg: ResolvedConfig): Promise<void> {

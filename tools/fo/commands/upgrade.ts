@@ -1,3 +1,4 @@
+import { decode, obj, opt, record, str } from "../lib/shape.ts";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { capture, captureAsync, stream } from "../lib/proc.ts";
@@ -102,9 +103,11 @@ function inputPath(root: string, name: string): string {
   const r = capture("nix", ["flake", "archive", "--json", "--no-write-lock-file"], {
     cwd: root,
   });
-  const parsed = JSON.parse(r.stdout) as {
-    inputs?: Record<string, { path?: string }>;
-  };
+  const parsed = decode(
+    r.stdout,
+    "nix flake archive --json",
+    obj({ inputs: opt(record(obj({ path: opt(str) }))) }),
+  );
   const path = parsed.inputs?.[name]?.path;
   if (!path) throw new Error(`nix flake archive did not report a path for ${name}`);
   return path;

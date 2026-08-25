@@ -1,3 +1,4 @@
+import { decode, obj, opt, str } from "../lib/shape.ts";
 import { readSecret } from "./info.ts";
 import { fetchIngress } from "../lib/http.ts";
 import { die } from "../lib/ui.ts";
@@ -16,6 +17,8 @@ import type { ResolvedConfig } from "../config.ts";
  * and it lives in the ROOT realm - not `alpha`, which this deployment does not
  * have.
  */
+const TOKEN_RESPONSE = obj({ access_token: opt(str) });
+
 const CLIENT = "idm-provisioning";
 const SCOPE = "fr:idm:*";
 
@@ -51,7 +54,7 @@ export async function getToken(cfg: ResolvedConfig): Promise<string> {
   if (res.status !== 200) {
     die(`AM returned ${res.status} for a token request: ${res.body.slice(0, 300)}`);
   }
-  const token = (JSON.parse(res.body) as { access_token?: string }).access_token;
+  const token = decode(res.body, "AM access_token", TOKEN_RESPONSE).access_token;
   if (!token) die(`AM returned no access_token: ${res.body.slice(0, 300)}`);
   return token;
 }

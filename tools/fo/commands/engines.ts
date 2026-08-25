@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { capture } from "../lib/proc.ts";
 import { fetchIngress } from "../lib/http.ts";
 import { detail, fail, heading, ok, step, warn } from "../lib/ui.ts";
+import { arrayOf, decode, obj, opt, str } from "../lib/shape.ts";
 import { readSecret } from "./info.ts";
 import { getToken } from "./token.ts";
 import {
@@ -56,11 +57,7 @@ async function probeIdm(cfg: ResolvedConfig, source: string): Promise<Surface> {
       `IDM returned ${res.status} for script eval: ${res.body.slice(0, 300)}`,
     );
   }
-  const parsed: unknown = JSON.parse(res.body);
-  if (!Array.isArray(parsed)) {
-    throw new Error(`IDM eval returned ${typeof parsed}, expected an array`);
-  }
-  return parseProbeOutput(parsed.map(String));
+  return parseProbeOutput(decode(res.body, "IDM script eval", arrayOf(str)));
 }
 
 /* ------------------------------------------------------------------- PingAM */
@@ -117,7 +114,7 @@ async function amSsoToken(
     },
     ...(ca ? { ca } : {}),
   });
-  const t = (JSON.parse(res.body) as { tokenId?: string }).tokenId;
+  const t = decode(res.body, "AM authenticate", obj({ tokenId: opt(str) })).tokenId;
   if (!t) throw new Error(`AM did not return a tokenId: ${res.body.slice(0, 200)}`);
   return t;
 }
