@@ -1190,6 +1190,39 @@ source, and an error must stay readable rather than dumping a 5 KB payload.
 
 ---
 
+### Phase 6.3 — derive the image tag — **DONE**
+
+The last hand-maintained pin. ForgeOps publishes images as `<release>-<build>`,
+and the build number comes from their pipeline: it appears **nowhere** in the
+source tree the flake pins, so `2026.3.0-1849` had always been read off a
+release note and typed into `config.ts`. `fo upgrade` said as much — "RELEASE
+is set by hand, not by the flake" — which is an instruction, not a check.
+
+It is also the pin most likely to be quietly wrong. A stale tag installs an
+older platform than the chart expects and nothing complains, because the
+images it names still exist — `checkImagesExist` passes either way.
+
+The registry knows, and lists tags anonymously, so `fo upgrade` now asks:
+newest build for the pinned release, compared against `RELEASE.imageTag`.
+Advisory when a newer build merely exists (normal, and the pinned one still
+resolves); an error when the tag belongs to a **different release** than the
+chart, which is the case nothing else could catch.
+
+Build numbers are compared numerically. They are four digits today, which
+makes a string sort agree by accident — nobody promised that, and a five-digit
+build sorts below `9999` as text. There is a test for exactly that case.
+
+Verified live against the registry, and both failure paths driven by editing
+the pin: an older build warns with the tag to take, and a tag from another
+release fails.
+
+`RELEASE.productVersion` stays by hand. It is not derivable from the tag list
+— the mapping from `2026.3.0` to `8.1.1` is not published anywhere machine-
+readable — but a wrong value fails loudly, because `am-config-upgrader` is
+published under it and is one of the refs probed.
+
+---
+
 ## 12. Risks
 
 | Risk                                                                                                                            | Severity | Mitigation                                                                                                                                                                                                                                                                   |
@@ -1202,7 +1235,7 @@ source, and an error must stay readable rather than dumping a 5 KB payload.
 | RAM | **Low** (was Medium) | Measured **4.4 GiB actual** for the whole stack, against 6.5 GiB of requests. A 16 GB laptop is comfortable, not marginal. macOS still needs Docker Desktop's VM raised. `fo doctor` checks and warns. |
 | **The stack trusts a client-supplied transaction id** | Low (dev only) | `fo` sets `PLATFORM_TRUST_TRANSACTION_HEADER=true` on PingAM, PingIDM and both PingDS instances, because without it `fo trace` cannot work at all — each component mints its own root id. It means a caller can dictate what its requests correlate to. Harmless on a local dev stack; in production the header must be stripped at the edge. Stated in the README, not just here. |
 | **Licensing**                                                                                                                   | Medium   | Images pull anonymously, but Ping's subscription terms govern _use_. This is a dev/eval stack; the README must say so plainly and must not imply a production path.                                                                                                          |
-| **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | **Low** (was Medium) | Pinned hard via the flake input, and `fo upgrade` now bumps it, diffs the chart and probes all seventeen pinned image refs. Residual: `RELEASE.imageTag` is still chosen by hand, because the chart and the docs name different builds and `am-config-upgrader` follows the docs' scheme rather than the chart's. |
+| **ForgeOps churn** (2026.1 moved config profiles out of the app images; 2026.3 removed secret-generator and added Helm secrets) | **Low** (was Medium) | Pinned hard via the flake input, and `fo upgrade` now bumps it, diffs the chart and probes all seventeen pinned image refs. `RELEASE.imageTag` was the residual - chosen by hand, because the build number appears nowhere in the source we pin - and is now derived: `fo upgrade` lists the registry's published tags and reports whether the pin is the newest build of the pinned release. Residual: `RELEASE.productVersion` is still by hand, but a wrong one fails loudly, because `am-config-upgrader:<productVersion>` is one of the seventeen refs probed. |
 | **Tilt is a second daemon**                                                                                                     | ~~Low~~ **Gone** | Resolved in Phase 2 rather than mitigated: `fo up` no longer starts Tilt at all. Tilt runs only for as long as a developer keeps `fo dev` in the foreground, and `fo watch` does the same job without it.                                                                     |
 
 ---
