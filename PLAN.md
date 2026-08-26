@@ -1600,3 +1600,31 @@ zero when empty, so there is nothing to allow), a named get (wants
 Verified by pointing the kubeconfig at a dead port: `fo sync`, `fo info`,
 `fo shell`, `fo restart` and `fo status` all exit non-zero with the runtime's
 own error, where four of them previously exited zero.
+
+### Phase 6.6 — breadth for the least-verified piece — **DONE**
+
+Asked, after eight rounds, which change was *least verified* rather than most
+severe, codex named the use-site analyser: its discrimination tests prove the
+AST forms someone thought of, and the person who chose those forms also wrote
+the resolver. The live probes verify what the engine has; nothing verified that
+every way of writing a reference to it is recognised.
+
+So `tests/fixtures/reaches-one-absent.ts` takes ONE absent member and writes it
+sixteen ways — property access, element access, optional chaining, a ternary, a
+`satisfies`, a cast, four destructuring spellings, a parameter pattern — and
+marks each `rNN` (must be caught) or `dNN` (documented as outside the proof).
+The test reads those markers out of the fixture rather than restating them, so
+adding a case without deciding which it is fails.
+
+The second assertion is the one that earns its keep: every `dNN` must STILL not
+be caught. A decline quietly becoming catchable means the boundary written in
+`tools/engine-usage.mjs`, the README and AUTHORING is wrong, and nothing else
+would notice. Verified by breaking element-access resolution and watching the
+test fail.
+
+**And a gate nobody was running.** `fo check` type-checks the `fo` CLI with
+tsgo, and it had not been run across three commits of editing that CLI — the
+platform gates and the node test suite were both green, and node strips types,
+so neither looked at `tools/fo`. Two unused imports would have failed CI. That
+is the same shape as everything else in this phase: two signals read as
+"checked" while neither covered the thing being changed.

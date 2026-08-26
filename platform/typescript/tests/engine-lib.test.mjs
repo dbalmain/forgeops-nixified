@@ -325,3 +325,57 @@ test("the native-subclass gate can still fail, however the native is named", () 
     "extending a project class is legitimate and must not be flagged",
   );
 });
+
+test("one absent builtin, reached every way it can be written", () => {
+  // BREADTH. The fixture above has one case per resolvable form, which proves
+  // each mechanism works; it says little about coverage, because the same
+  // person chose the forms and wrote the resolver. Asked what was least
+  // verified in this subsystem after eight rounds of review, codex named
+  // exactly that.
+  //
+  // So this takes ONE member (`Float32Array#map`) and writes it every way
+  // there is. Expectations come from the fixture's own markers rather than a
+  // list here: a shape named `rNN` must be FOUND, one named `dNN` must NOT be,
+  // so adding a case without deciding which it is fails the test.
+  //
+  // The second half is the part that earns its keep. A decline quietly
+  // becoming catchable means the documented boundary is wrong, and nothing
+  // else in the suite would notice.
+  const path = join(projectRoot, "tests", "fixtures", "reaches-one-absent.ts");
+  const lines = readFileSync(path, "utf8").split("\n");
+  const reached = [];
+  const declined = [];
+  lines.forEach((line, i) => {
+    if (/\br\d\d\b/.test(line) && !line.trimStart().startsWith("//")) {
+      reached.push(i + 1);
+    }
+    if (/\bd\d\d\b/.test(line) && !line.trimStart().startsWith("//")) {
+      declined.push(i + 1);
+    }
+  });
+  assert.ok(reached.length >= 12, `only ${reached.length} reached shapes`);
+  assert.ok(declined.length >= 4, `only ${declined.length} declined shapes`);
+
+  const found = checkEngineUsage(
+    join("tests", "fixtures", "tsconfig.breadth.json"),
+    surface.idm,
+  );
+  for (const f of found) {
+    assert.equal(f.key, "Float32Array#map", "the fixture reaches one member");
+  }
+  const foundLines = found.map((f) => f.line).sort((a, b) => a - b);
+  assert.deepEqual(
+    foundLines,
+    reached.sort((a, b) => a - b),
+    "every `rNN` shape must be caught; a miss here is a builtin that would " +
+      "reach production",
+  );
+  for (const line of declined) {
+    assert.ok(
+      !foundLines.includes(line),
+      `line ${line} is documented as outside the proof but was caught. That ` +
+        "is good news - update tools/engine-usage.mjs's boundary list, the " +
+        "README and AUTHORING, and move the case to `rNN`.",
+    );
+  }
+});
