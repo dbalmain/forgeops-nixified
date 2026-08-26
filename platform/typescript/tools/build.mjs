@@ -70,15 +70,37 @@ const GLOBAL_NAME = "__foMain";
 const argv = process.argv.slice(2);
 const watchMode = argv.includes("--watch");
 const skipTypeCheck = argv.includes("--no-type-check");
+// `npm run type-check` is this file with nothing else turned on, so the list
+// of programs above cannot drift from what the build enforces.
+const typeCheckOnly = argv.includes("--type-check-only");
 let atomicSequence = 0;
 
 // ---------------------------------------------------------------------------
 // Steps
 // ---------------------------------------------------------------------------
 
+/**
+ * Every TypeScript program in this package.
+ *
+ * THE list, not a copy of it: `package.json`'s `type-check` script runs this
+ * file too (`--type-check-only`), because when the two kept their own copies
+ * they drifted - `tsconfig.am.json` was in one and not the other, so a type
+ * error in a PingAM script passed `fo build`, was emitted, and only `fo check`
+ * would catch it. A build that emits code it never type-checked is not a
+ * build.
+ */
+const TYPE_CHECK_PROGRAMS = [
+  "tsconfig.json",
+  "tsconfig.am.json",
+  "tsconfig.tests.json",
+];
+
 function typeCheck() {
-  const tsc = join(projectRoot, "node_modules", ".bin", "tsc");
-  if (!existsSync(tsc)) {
+  // tsgo, not tsc: the project moved to TypeScript 7 for the 5.7x, and this
+  // file was left behind on the old compiler while `package.json` moved. Two
+  // programs AND two compilers out of step.
+  const tsgo = join(projectRoot, "node_modules", ".bin", "tsgo");
+  if (!existsSync(tsgo)) {
     // Never "run npm install": the dependency tree is built by nix from the
     // committed lockfile and linked in by the devShell.
     throw new Error(
@@ -87,9 +109,9 @@ function typeCheck() {
         "nix store. `npm install` is never the answer here."
     );
   }
-  for (const config of ["tsconfig.json", "tsconfig.tests.json"]) {
+  for (const config of TYPE_CHECK_PROGRAMS) {
     const result = spawnSync(
-      tsc,
+      tsgo,
       ["--noEmit", "-p", join(projectRoot, config)],
       {
         stdio: "inherit",
@@ -746,7 +768,16 @@ async function once() {
   }
 }
 
-if (watchMode) {
+if (typeCheckOnly) {
+  // `npm run type-check`. Same function, same program list, no emit.
+  try {
+    typeCheck();
+    process.exit(0);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+} else if (watchMode) {
   const { watch } = await import("node:fs");
   let pending = null;
   let building = false;
