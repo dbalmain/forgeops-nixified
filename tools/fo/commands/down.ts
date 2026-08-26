@@ -3,6 +3,7 @@ import { capture, stream } from "../lib/proc.ts";
 import { detail, ok, step } from "../lib/ui.ts";
 import { clusterExists, deleteCluster } from "../cluster/k3d.ts";
 import { removeLogStack } from "./logstore.ts";
+import { assertInsideStateRoot } from "../config.ts";
 import type { ResolvedConfig } from "../config.ts";
 
 export async function down(
@@ -10,6 +11,10 @@ export async function down(
   opts: { destroy: boolean },
 ): Promise<void> {
   if (opts.destroy) {
+    // Independently of the name validation in config.ts, because this is the
+    // one line in `fo` that can destroy something a git revert cannot bring
+    // back.
+    assertInsideStateRoot(cfg);
     await deleteCluster(cfg.clusterName);
     rmSync(cfg.stateDir, { recursive: true, force: true });
     ok("cluster and local state removed");

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * The ForgeOps release this checkout is pinned to.
@@ -184,6 +184,54 @@ export function normalizeLogs(
   return { ...LOGS_DEFAULTS, ...stripUndefined(logs) };
 }
 
+/**
+ * Environment names become a Kubernetes namespace, a hostname label and a
+ * PATH SEGMENT, and the last of those is why this is not merely tidiness.
+ *
+ * `stateDir` is `join(root, ".fo", env)` and `fo down --destroy` hands it to
+ * `rmSync(..., {recursive: true, force: true})`. `join` resolves `..`, so an
+ * unvalidated name walks straight out of the repo:
+ *
+ *   --env ../..     ->  <parent of the checkout>
+ *   --env ../../..  ->  <its parent>
+ *
+ * `FO_ENV` is the same vector without a flag. Rejecting anything that is not a
+ * DNS-1123 label closes it at the source, and is what Kubernetes and the
+ * hostname both require anyway - so this is one rule, not three.
+ *
+ * The deletion site guards itself as well. See assertInsideStateRoot.
+ */
+export function assertEnvName(env: string): void {
+  if (env.length === 0 || env.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(env)) {
+    throw new Error(
+      `invalid environment name ${JSON.stringify(env)}. Environment names ` +
+        `become a namespace, a hostname and a directory, so they must be a ` +
+        `DNS-1123 label: lowercase letters, digits and hyphens, starting and ` +
+        `ending alphanumeric, at most 63 characters.`,
+    );
+  }
+}
+
+/**
+ * The second, independent half of the guard above, for the one caller that
+ * deletes a tree recursively.
+ *
+ * Deliberately does NOT trust assertEnvName: a validator one refactor away
+ * from the `rmSync` it protects is a validator that will eventually stop
+ * protecting it. This re-derives the answer from the resolved path and asks
+ * the only question that matters - is this an immediate child of <root>/.fo.
+ */
+export function assertInsideStateRoot(cfg: ResolvedConfig): void {
+  const stateRoot = resolve(cfg.root, ".fo");
+  const target = resolve(cfg.stateDir);
+  if (dirname(target) !== stateRoot || target === stateRoot) {
+    throw new Error(
+      `refusing to delete ${target}: it is not an immediate child of ` +
+        `${stateRoot}. This is a bug in fo, not something you did wrong.`,
+    );
+  }
+}
+
 export function root(): string {
   const r = process.env["FO_ROOT"];
   if (!r) {
@@ -216,6 +264,9 @@ export async function loadConfig(envName?: string): Promise<ResolvedConfig> {
   }
   const merged = { ...DEFAULTS, ...stripUndefined(user) };
   const env = envName ?? process.env["FO_ENV"] ?? merged.defaultEnv;
+  // Before anything is derived from it - namespace, fqdn and stateDir all
+  // below, and stateDir is what `fo down --destroy` deletes.
+  assertEnvName(env);
   const src = forgeopsSrc();
   return {
     ...merged,
