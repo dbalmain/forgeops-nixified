@@ -43,6 +43,7 @@ import {
   TSGO_LIB_DIR,
   TS_LIB_DIR,
   assertMeasurementCovers,
+  sharedRuntimeLibs,
 } from "../tools/engine-coverage.mjs";
 import {
   RUNTIME_PROGRAMS,
@@ -68,7 +69,12 @@ function libFile(entry, libDir) {
   return join(libDir, `lib.${entry.toLowerCase()}.d.ts`);
 }
 
-test("every lib entry the runtime programs name actually exists", () => {
+test("the two runtime programs pin the same lib, and every entry exists", () => {
+  // The sharing is the premise of ONE surface covering both engines, and it
+  // was never checked: the census read `tsconfig.json` alone, so an entry
+  // added to `tsconfig.am.json` would be type-checked against and never
+  // probed.
+  sharedRuntimeLibs();
   for (const { tsconfig } of RUNTIME_PROGRAMS) {
     for (const entry of readTsconfig(tsconfig).compilerOptions.lib) {
       for (const [what, dir] of [

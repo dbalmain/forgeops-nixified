@@ -52,10 +52,12 @@ async function applyAmProfile(cfg: ResolvedConfig): Promise<void> {
 
 async function roll(cfg: ResolvedConfig, component: string): Promise<void> {
   // Deployments and StatefulSets both take `rollout restart`; find which.
+  // Same as `fo shell`: a list query with no matches is exit zero and empty,
+  // so a failure here is the cluster, not the absence of a workload.
   const kind = capture(
     "kubectl",
     ns(cfg, ["get", "deployment,statefulset", "-l", `app=${component}`, "-o", "name"]),
-    { env: kubeEnv(cfg), allowFailure: true },
+    { env: kubeEnv(cfg) },
   ).stdout.trim().split("\n")[0];
   if (!kind) die(`no deployment or statefulset for ${component}`);
 

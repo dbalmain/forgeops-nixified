@@ -106,7 +106,14 @@ export function removeLogStack(
   for (const line of touched.split("\n")) detail(line);
 }
 
-/** Is the store actually running? Used to give a useful error, not to gate. */
+/**
+ * Is the store actually running? Used to give a useful error, not to gate.
+ *
+ * `--ignore-not-found`, so "not deployed" is exit zero and empty while an
+ * unreadable cluster throws. It used to answer `false` for both, which turned
+ * a broken kubeconfig into "no log store running" and sent the reader looking
+ * in the wrong place.
+ */
 export function logStackReady(cfg: ResolvedConfig): boolean {
   const r = capture(
     "kubectl",
@@ -114,12 +121,13 @@ export function logStackReady(cfg: ResolvedConfig): boolean {
       "get",
       "deployment",
       LOGS_NAME,
+      "--ignore-not-found",
       "-o",
       "jsonpath={.status.readyReplicas}",
     ]),
-    { env: kubeEnv(cfg), allowFailure: true },
+    { env: kubeEnv(cfg) },
   );
-  return r.code === 0 && Number(r.stdout.trim() || "0") > 0;
+  return Number(r.stdout.trim() || "0") > 0;
 }
 
 /** Warn, but do not fail, when the collector is not up. */

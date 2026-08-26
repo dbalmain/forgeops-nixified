@@ -1533,3 +1533,62 @@ Still open, flagged **[OPEN]** in place:
 ### Backlog, not scheduled
 
 - ~~**Narrow at the JSON boundary**~~ — **done 2026-08-26**, see Phase 6.2.
+
+### Phase 6.5 — the failure-conversion audit — **DONE**
+
+Three separate defects this sprint had the same shape: a tool that could not
+run became a confident negative. `getPods` turned an unreadable API server into
+an empty namespace, `clusterExists` turned a stopped Docker daemon into "no
+cluster", and the use-site checker's lib-file path match turned "found nothing"
+and "cannot find anything" into the same green tick. So rather than wait for
+the next review to find the fourth, codex was asked to trace every
+`allowFailure` and empty-result conversion in `tools/fo`. It found seven more.
+
+- **`fo amster` exited zero on timeout**, so a config import that never
+  finished reported success — and `fo up` runs it, so the whole install claimed
+  to have worked with the entities absent. `--timeout 0` was worse: it polled
+  zero times and returned immediately. It now means "no deadline", as it does
+  everywhere else in this CLI.
+- **`fo amster` also folded two unreadable-cluster cases into "keep going".**
+  The initial job lookup treated any failure as an empty list, and the polling
+  GET treated any failure as "not visible yet" — burning the whole timeout and
+  then blaming the job. Both comments already claimed the distinction the code
+  did not make.
+- **`fo sync` had two false-success paths.** `podName()` folded every kubectl
+  failure into "no pod", `syncIdm` warned and returned false, and `main.ts`
+  discarded the return value — so a dead API server exited zero having pushed
+  nothing. And orphan retirement explicitly ignored its `kubectl exec` failure,
+  so the files could copy, the deleted endpoint stay live, and `fo sync` print
+  "synced". That is the stale-endpoint bug phase 6 fixed, reintroduced by one
+  line that decided not to look.
+- **`fo info --json` printed empty credentials and exited zero** against a
+  cluster it could not read. `fo shell` and `fo restart` reported "no pod" and
+  "no workload" for the same reason. All four now use `--ignore-not-found`,
+  which is the distinction `allowFailure: true` throws away: absence is exit
+  zero and empty output, and everything else is a failure.
+- **`fo doctor` reported checks green when their tools were missing.** `ss` and
+  `free` are Linux-only, neither is in `runtimeTools`, and both pipelines end in
+  `2>/dev/null` — so on a machine without them the output was empty, empty read
+  as "nothing is listening", and a preflight that could not look said "ports
+  free". Checks can answer `unknown` now, which warns and never prints `ok`.
+- **Filesystem reads treated unreadable as empty.** `copyTree` and `fileCount`
+  caught every `readdirSync` error, so a permission problem built an IDM profile
+  with the authored config silently missing. Absence is `existsSync`; everything
+  else propagates.
+- **The census followed only `tsconfig.json`.** One shared measurement covering
+  both engines is the premise of the whole audit, and nothing checked that the
+  two runtime programs still pin the same `lib` — an entry added to
+  `tsconfig.am.json` would be type-checked against and never probed.
+  `sharedRuntimeLibs()` asserts it, and the seed, manifest, coverage gate and
+  test all read through it.
+
+And the root cause got an answer rather than seven patches: `allowFailure` now
+takes a predicate as well as `true`, so a site that accepts a failure says
+WHICH one and every other failure throws. `true` is left for genuinely
+best-effort work — fetching a crash log to print, tearing down a probe — and
+the option documents that distinction where someone reaching for it will read
+it.
+
+Verified by pointing the kubeconfig at a dead port: `fo sync`, `fo info`,
+`fo shell`, `fo restart` and `fo status` all exit non-zero with the runtime's
+own error, where four of them previously exited zero.

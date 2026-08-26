@@ -49,6 +49,10 @@ export function readSecret(
   secret: string,
   key: string,
 ): string | undefined {
+  // `--ignore-not-found` rather than `allowFailure`. A secret that does not
+  // exist yet is a real answer; an unreachable cluster is not, and folding the
+  // two together made `fo info --json` print empty credentials and exit ZERO
+  // against a stack it could not read.
   const r = capture(
     "kubectl",
     [
@@ -57,14 +61,14 @@ export function readSecret(
       "get",
       "secret",
       secret,
+      "--ignore-not-found",
       "-o",
       `jsonpath={.data.${key.replace(/\./g, "\\.")}}`,
     ],
-    { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
+    { env: { KUBECONFIG: cfg.kubeconfig } },
   );
   const b64 = r.stdout.trim();
-  if (r.code !== 0 || !b64) return undefined;
-  return Buffer.from(b64, "base64").toString("utf8");
+  return b64 ? Buffer.from(b64, "base64").toString("utf8") : undefined;
 }
 
 /**

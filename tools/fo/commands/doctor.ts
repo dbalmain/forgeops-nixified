@@ -3,7 +3,19 @@ import { capture, has } from "../lib/proc.ts";
 import { fail, heading, ok, warn } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
 
-type Check = { name: string; run: () => Promise<string | true> };
+/**
+ * A check's answer: passed, a message saying what is wrong, or `unknown`.
+ *
+ * `unknown` exists because the tool a check depends on may not be there. `ss`
+ * and `free` are Linux-only and neither is in `runtimeTools`, and their
+ * pipelines end in `2>/dev/null` -- so on a machine without them the output was
+ * empty, empty read as "nothing is listening", and a preflight that could not
+ * look reported "ports free". A check that cannot run has to say so.
+ */
+type Answer = true | string | { unknown: string };
+
+type Check = { name: string; run: () => Promise<Answer> };
+
 
 const REQUIRED_TOOLS = ["docker", "k3d", "kubectl", "helm"];
 
@@ -54,6 +66,9 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
     {
       name: "ports 80 and 443 free (or already ours)",
       run: async () => {
+        if (!has("ss")) {
+          return { unknown: "`ss` is not on PATH (iproute2), so nothing here can see what is listening" };
+        }
         const busy: string[] = [];
         for (const p of [80, 443]) {
           const r = capture(
@@ -77,11 +92,16 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
     {
       name: "memory headroom",
       run: async () => {
+        if (!has("free")) {
+          return { unknown: "`free` is not on PATH (procps), so available memory is unknown" };
+        }
         const r = capture("sh", ["-c", "free -m 2>/dev/null | awk '/^Mem:/{print $7}'"], {
           allowFailure: true,
         });
         const avail = Number(r.stdout.trim());
-        if (!Number.isFinite(avail) || avail === 0) return true;
+        if (!Number.isFinite(avail) || avail === 0) {
+          return { unknown: "`free` produced nothing readable" };
+        }
         // Measured 4.4 GiB actual for the whole stack in the Phase 0 spike.
         return avail >= 6000
           ? true
@@ -95,7 +115,9 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
           allowFailure: true,
         });
         const avail = Number(r.stdout.trim());
-        if (!Number.isFinite(avail) || avail === 0) return true;
+        if (!Number.isFinite(avail) || avail === 0) {
+          return { unknown: "`df` produced nothing readable" };
+        }
         return avail >= 20000
           ? true
           : `${avail} MB free; images plus DS volumes need roughly 10 GB`;
@@ -107,7 +129,12 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
   for (const c of checks) {
     const r = await c.run();
     if (r === true) ok(c.name);
-    else {
+    else if (typeof r === "object") {
+      // Never `ok`. "I could not look" and "I looked and it is fine" are
+      // different answers, and printing the second for the first is what makes
+      // a preflight worse than no preflight.
+      warn(`${c.name}: unknown - ${r.unknown}`);
+    } else {
       // Resolution and headroom are advisory; tools and docker are fatal.
       const fatal = c.name.includes("tools") || c.name.includes("docker daemon");
       if (fatal) {

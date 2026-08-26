@@ -19,10 +19,13 @@ export async function shell(
       `unknown component "${component}". one of: ${Object.keys(POD_SELECTOR).join(", ")}`,
     );
   }
+  // A LIST query matching nothing exits zero with empty output, so there is no
+  // failure to allow: a non-zero exit means the cluster could not be read, and
+  // reporting that as "no running pod" pointed the reader at the wrong thing.
   const r = capture(
     "kubectl",
     ["-n", cfg.namespace, "get", "pod", "-l", sel, "-o", "jsonpath={.items[0].metadata.name}"],
-    { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
+    { env: { KUBECONFIG: cfg.kubeconfig } },
   );
   const pod = r.stdout.trim();
   if (!pod) die(`no running pod for ${component} in namespace ${cfg.namespace}`);

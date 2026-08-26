@@ -106,6 +106,40 @@ export function readTsconfig(name) {
   return JSON.parse(readFileSync(join(projectRoot, name), "utf8"));
 }
 
+/**
+ * The programs whose output runs on a script engine, and the `lib` they share.
+ *
+ * ASSERTS they share it. Everything here -- the census, the seed, the manifest
+ * -- read `tsconfig.json` alone, so a lib entry added to `tsconfig.am.json`
+ * would be used by tsgo when it type-checks the PingAM program while coverage
+ * went on reporting the measurement fresh. The newly admitted members would be
+ * absent from the surface rather than recorded `false`, and absent reads as
+ * fine to the use-site check.
+ *
+ * They are byte-for-byte equal today, which is the project's intent; this is
+ * what makes that intent load-bearing instead of a coincidence.
+ */
+export function sharedRuntimeLibs() {
+  const programs = ["tsconfig.json", "tsconfig.am.json"];
+  const [first, ...rest] = programs.map((name) => ({
+    name,
+    lib: readTsconfig(name).compilerOptions.lib,
+  }));
+  for (const other of rest) {
+    if (JSON.stringify(other.lib) !== JSON.stringify(first.lib)) {
+      throw new Error(
+        `${first.name} and ${other.name} no longer pin the same \`lib\`, and ` +
+          "everything downstream assumes one shared measurement:\n" +
+          `  ${first.name}: ${first.lib.join(", ")}\n` +
+          `  ${other.name}: ${other.lib.join(", ")}\n` +
+          "Either bring them back into line, or make the census, the seed, " +
+          "the manifest and the surface per-program.",
+      );
+    }
+  }
+  return first.lib;
+}
+
 function memberName(member, sourceFile) {
   if (!member.name) return undefined;
   if (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) {
@@ -257,7 +291,7 @@ export function tsgoVersion() {
  * build" is true rather than aspirational.
  */
 export function assertMeasurementCovers(surface, coverage) {
-  const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
+  const libs = sharedRuntimeLibs();
 
   const tsgo = requiredKeys(libs, TSGO_LIB_DIR);
   const tsc = requiredKeys(libs, TS_LIB_DIR);
@@ -356,7 +390,7 @@ export function assertMeasurementCovers(surface, coverage) {
  */
 async function main() {
   const { writeFileSync } = await import("node:fs");
-  const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
+  const libs = sharedRuntimeLibs();
   const { keys, unclassified } = requiredKeysUnion(libs);
   if (unclassified.length > 0) {
     throw new Error(
@@ -393,7 +427,7 @@ async function main() {
  */
 async function writeManifest() {
   const { writeFileSync } = await import("node:fs");
-  const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
+  const libs = sharedRuntimeLibs();
   const { keys } = requiredKeysUnion(libs);
   const path = join(projectRoot, "framework", "engine-coverage.json");
   const existing = JSON.parse(readFileSync(path, "utf8"));

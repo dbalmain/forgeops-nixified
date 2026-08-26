@@ -237,10 +237,12 @@ middle of somebody's login. Nothing is polyfilled (`useBuiltIns: false`), so
 there is no third option.
 
 What that check proves, exactly: property access, element access with a literal
-or finite-union key, binding patterns and destructuring assignment, plus
-well-known symbol members. What it does not: `obj[key]` where `key` is a plain
-`string`, a structural generic that has erased the concrete type, and code
-inside a bundled dependency (there are none today). The boundary is stated in
+or finite-union key, binding patterns (nested, renamed, parameters, computed
+literal keys) and object destructuring assignment, plus well-known symbol
+members. What it does not: `obj[key]` where `key` is a plain `string`, a
+structural generic that has erased the concrete type, a non-shorthand key in an
+array-pattern or `for...of` assignment position, and code inside a bundled
+dependency (there are none today). The boundary is stated in
 `tools/engine-usage.mjs` rather than papered over.
 
 The behavioural half is generated, not written: `tools/emit-corpus.ts` goes

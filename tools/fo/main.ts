@@ -190,7 +190,13 @@ async function main(): Promise<void> {
       if (only && !["conf", "script", "data"].includes(only)) {
         die(`fo sync takes "conf", "script" or "data", not "${only}"`);
       }
-      syncIdm(cfg, only as "conf" | "script" | "data" | undefined);
+      // The return value is the answer, and it was thrown away: with no
+      // running IDM pod `syncIdm` warns and returns false, and `fo sync`
+      // exited ZERO having pushed nothing. A sync command that cannot fail is
+      // no use in a script.
+      if (!syncIdm(cfg, only as "conf" | "script" | "data" | undefined)) {
+        die("nothing was synced - see the warning above");
+      }
       break;
     }
     case "build":

@@ -5,8 +5,21 @@ export type RunOptions = {
   env?: Record<string, string>;
   /** Feed this to the child's stdin. */
   input?: string;
-  /** Don't throw on a non-zero exit; return it instead. */
-  allowFailure?: boolean;
+  /**
+   * Don't throw on a non-zero exit; return it instead.
+   *
+   * PREFER THE PREDICATE FORM. `true` accepts EVERY failure, and the recurring
+   * bug in this CLI has been exactly that: a tool that could not run turned
+   * into a confident negative. A dead Docker daemon became "no cluster" and
+   * `fo down --destroy` deleted live state; an unreadable API server became
+   * "no pods" and `fo up` reported a stack that was not serving; an
+   * unreachable cluster became "no IDM pod" and `fo sync` exited zero.
+   *
+   * Passing a predicate says WHICH failure is expected and lets every other
+   * one throw. `true` is for genuinely best-effort work whose result nothing
+   * depends on -- fetching crash logs to print, tearing down a probe.
+   */
+  allowFailure?: boolean | ((r: RunResult) => boolean);
   cwd?: string;
 };
 
@@ -14,8 +27,8 @@ export type RunResult = { code: number; stdout: string; stderr: string };
 
 /**
  * Run a command and capture its output. Throws on failure unless
- * `allowFailure` is set, because a silently-ignored kubectl error is how you
- * end up debugging the wrong thing ten minutes later.
+ * `allowFailure` accepts it, because a silently-ignored kubectl error is how
+ * you end up debugging the wrong thing ten minutes later.
  */
 export function capture(
   cmd: string,
@@ -35,7 +48,11 @@ export function capture(
     stdout: r.stdout ?? "",
     stderr: r.stderr ?? "",
   };
-  if (res.code !== 0 && !opts.allowFailure) {
+  const accepted =
+    typeof opts.allowFailure === "function"
+      ? opts.allowFailure(res)
+      : opts.allowFailure === true;
+  if (res.code !== 0 && !accepted) {
     throw new Error(
       `${cmd} ${args.join(" ")} exited ${res.code}\n${res.stderr || res.stdout}`,
     );
@@ -58,7 +75,9 @@ export function stream(
     child.on("error", reject);
     child.on("close", (code) => {
       const c = code ?? -1;
-      if (c !== 0 && !opts.allowFailure) {
+      // `stream` inherits stdio, so there is nothing to hand a predicate; only
+      // the boolean form applies here.
+      if (c !== 0 && opts.allowFailure !== true) {
         reject(new Error(`${cmd} ${args.join(" ")} exited ${c}`));
       } else {
         resolve(c);
@@ -91,7 +110,11 @@ export function captureAsync(
     child.on("error", reject);
     child.on("close", (code) => {
       const res = { code: code ?? -1, stdout, stderr };
-      if (res.code !== 0 && !opts.allowFailure) {
+      const accepted =
+        typeof opts.allowFailure === "function"
+          ? opts.allowFailure(res)
+          : opts.allowFailure === true;
+      if (res.code !== 0 && !accepted) {
         reject(new Error(`${cmd} ${args.join(" ")} exited ${res.code}\n${stderr || stdout}`));
       } else {
         resolve(res);

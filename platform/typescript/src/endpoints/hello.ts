@@ -59,8 +59,9 @@ export default defineEndpoint({
       handler: ({ params, query, log }) => {
         if (params.name === "nobody") {
           // A tagged fault, never a subclassed Error. Subclassing a native
-          // was probed on both engines: the object constructs, `instanceof
-          // Error` is true, and `instanceof YourError` is false.
+          // was probed on both engines and fails: an `Error` subclass
+          // constructs but `instanceof YourError` is false, and a `Map`
+          // subclass does not construct at all.
           throw badRequest("There is no greeting for nobody.", {
             name: params.name,
           });

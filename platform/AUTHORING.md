@@ -199,9 +199,11 @@ same step that runs the type-check, so the error arrives in your editor rather
 than from a later test run.
 
 That check resolves property access, element access with a literal or
-finite-union key, binding patterns, destructuring assignment and well-known
-symbol members. It cannot see `obj[key]` where `key` is a plain `string`, or a
-concrete type erased behind a structural generic; `tools/engine-usage.mjs`
+finite-union key, binding patterns (nested, renamed, parameters, computed
+literal keys) and object destructuring assignment, plus well-known symbol
+members. It cannot see `obj[key]` where `key` is a plain `string`, a concrete
+type erased behind a structural generic, or a non-shorthand key in an
+ARRAY-pattern or `for...of` assignment position; `tools/engine-usage.mjs`
 states the boundary rather than implying there isn't one.
 
 ```ts
@@ -243,11 +245,13 @@ check above switches off without a line of `main` changing. Spreading a literal
 tuple is fine and stays checked:
 `const names = ["high", "low"] as const; outcomes: [...names]`.
 
-And let `main`'s parameter be **inferred**. Annotating it replaces the narrowed
-type, and TypeScript accepts a wider `{ goTo(outcome: string): void }` because
-it compares method parameters bivariantly — no amount of care in `AmAction`
-prevents that. `fo build` rejects an annotated parameter instead, which is the
-only place it can be caught.
+Prefer to let `main`'s parameter be **inferred**. If you do annotate it, an
+annotation that admits an outcome you did not declare is rejected —
+`{ goTo(outcome: string): void }`, `any`, or one extra literal. An exact or
+narrower annotation is accepted, because restricting yourself to fewer exits is
+sound. That needs its own check: TypeScript compares method parameters
+bivariantly, so plain assignability accepts the wide one and no amount of care
+in `AmAction` changes it.
 
 PingAM also puts a bare `action` in global scope. That one is declared as
 accepting no outcome at all, so reaching for it is a compile error rather than

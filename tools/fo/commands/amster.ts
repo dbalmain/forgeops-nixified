@@ -145,7 +145,12 @@ export async function runAmster(
   packAmsterConfig(cfg);
 
   const first = await runImportJob(cfg, opts);
-  if (first.state === "ok" || first.state === "timeout") return;
+  if (first.state === "ok") return;
+  // A TIMEOUT IS NOT A SUCCESS. This returned normally for `timeout`, so an
+  // import that never finished -- or `--timeout 0`, which polls zero times --
+  // reported "amster config imported" and exited zero, with the entities
+  // absent. `fo up` runs this, so the whole install claimed to have worked.
+  if (first.state === "timeout") throw new Error(first.error);
 
   if (!looksLikeForwardReference(first.log)) {
     throw new Error(first.error);
@@ -154,7 +159,7 @@ export async function runAmster(
   // twice and should say so at once rather than taking a second job to do it.
   detail("an entity referenced one amster had not imported yet; second pass");
   const second = await runImportJob(cfg, opts);
-  if (second.state === "failed") {
+  if (second.state !== "ok") {
     throw new Error(
       second.error +
         "\n(this was the second pass; the first failed the same way)",
@@ -165,27 +170,32 @@ export async function runAmster(
 type ImportOutcome =
   | { state: "ok"; log: string }
   | { state: "failed"; log: string; error: string }
-  | { state: "timeout"; log: string };
+  | { state: "timeout"; log: string; error: string };
 
 async function runImportJob(
   cfg: ResolvedConfig,
   opts: { timeoutSeconds: number },
 ): Promise<ImportOutcome> {
+  // No `allowFailure`: a LIST query with no matches exits zero with an empty
+  // `items`, so a non-zero exit means the cluster could not be read. The
+  // comment here used to claim exactly that distinction while the code folded
+  // both into an empty list, and the empty list then reported success.
   const src = capture(
     "kubectl",
     ns(cfg, ["get", "job", "-l", "app=amster", "-o", "json"]),
-    { env: kubeEnv(cfg), allowFailure: true },
+    { env: kubeEnv(cfg) },
   );
-  // An empty list is the ordinary "nothing to clone" case and falls through to
-  // the warning below; unreadable output is not, and says so.
-  const items =
-    src.code === 0
-      ? decode(src.stdout, "kubectl get job -l app=amster", JOB_LIST).items
-      : [];
+  const items = decode(src.stdout, "kubectl get job -l app=amster", JOB_LIST).items;
   const template: Record<string, unknown> | undefined = items[items.length - 1];
   if (!template) {
-    warn("no existing amster job to clone; run `fo up` first");
-    return { state: "timeout", log: "" };
+    return {
+      state: "timeout",
+      log: "",
+      error:
+        "no existing amster job to clone, so nothing was imported. Run " +
+        "`fo up` first - the chart's own amster job is the template this " +
+        "clones.",
+    };
   }
 
   const name = `${JOB}-fo-${Date.now().toString(36)}`;
@@ -225,21 +235,27 @@ async function runImportJob(
   });
   detail(`job/${name} created`);
 
+  // `0` is "no deadline", the same as `fo up --timeout 0`. It used to mean
+  // "poll zero times", so `fo amster --timeout 0` warned once and exited zero
+  // having imported nothing -- the opposite of what the flag says everywhere
+  // else in this CLI.
+  const unbounded = opts.timeoutSeconds === 0;
   const deadline = Date.now() + opts.timeoutSeconds * 1000;
-  while (Date.now() < deadline) {
+  while (unbounded || Date.now() < deadline) {
     // Read the whole status as JSON rather than two jsonpath fields joined by
     // a space: `{.status.succeeded} {.status.failed}` renders as " 1" for a
     // FAILED job, and trimming that leaves "1" in the succeeded slot. That
     // made every failed import report success.
-    const r = capture("kubectl", ns(cfg, ["get", "job", name, "-o", "json"]), {
-      env: kubeEnv(cfg),
-      allowFailure: true,
-    });
-    // A non-zero exit means the job is not visible yet - keep waiting. Output
-    // we cannot read is a different thing and is allowed to throw: retrying it
-    // just burns the timeout and then reports "still running", which points at
-    // the job rather than at us.
-    if (r.code !== 0) {
+    // `--ignore-not-found` is the distinction this needs. The job may not be
+    // visible for a moment after `apply`, which is exit zero and empty output;
+    // anything else is the cluster failing, and treating THAT as "keep
+    // waiting" burnt the whole timeout and then blamed the job.
+    const r = capture(
+      "kubectl",
+      ns(cfg, ["get", "job", name, "-o", "json", "--ignore-not-found"]),
+      { env: kubeEnv(cfg) },
+    );
+    if (r.stdout.trim() === "") {
       await sleep(3000);
       continue;
     }
@@ -262,6 +278,13 @@ async function runImportJob(
     }
     await sleep(3000);
   }
-  warn(`job/${name} still running after ${opts.timeoutSeconds}s`);
-  return { state: "timeout", log: "" };
+  return {
+    state: "timeout",
+    log: "",
+    error:
+      `amster job/${name} was still running after ${opts.timeoutSeconds}s, ` +
+      "so the config was NOT imported. It is still going - watch it with " +
+      `\`kubectl -n ${cfg.namespace} get job ${name} -w\`, or re-run with a ` +
+      "longer --timeout. Nothing was torn down.",
+  };
 }

@@ -59,12 +59,12 @@ function applyDevOverrides(cfg: ResolvedConfig, systemProps: string): string {
 
 function copyTree(from: string, to: string): number {
   let n = 0;
-  let entries: string[];
-  try {
-    entries = readdirSync(from);
-  } catch {
-    return 0;
-  }
+  // ABSENCE is what "nothing to copy" means, and `existsSync` is what asks
+  // that. Catching every error instead meant a permission problem or an I/O
+  // error read as an empty directory, and the IDM profile was built with the
+  // authored config silently missing.
+  if (!existsSync(from)) return 0;
+  const entries = readdirSync(from);
   for (const e of entries) {
     const src = join(from, e);
     const dst = join(to, e);

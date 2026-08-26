@@ -41,13 +41,12 @@ function targets(cfg: ResolvedConfig): Target[] {
 }
 
 function fileCount(dir: string): number {
-  try {
-    return readdirSync(dir, { recursive: true, withFileTypes: true }).filter(
-      (e) => e.isFile(),
-    ).length;
-  } catch {
-    return 0;
-  }
+  // Same as `copyTree`: a directory that is not there is zero files; one that
+  // cannot be read is a problem worth hearing about, not a zero.
+  if (!existsSync(dir)) return 0;
+  return readdirSync(dir, { recursive: true, withFileTypes: true }).filter(
+    (e) => e.isFile(),
+  ).length;
 }
 
 /**
@@ -136,13 +135,17 @@ function retireOrphans(cfg: ResolvedConfig, pod: string): void {
     `done`,
   ].join(" ");
 
+  // No `allowFailure`. Ignoring this meant the files copied, the deleted
+  // endpoint stayed live in the pod, and `fo sync` printed "synced". That is
+  // the stale-endpoint failure this retirement pass exists to prevent,
+  // reintroduced by the one line that decided not to look.
   const r = capture(
     "kubectl",
     [
       "-n", cfg.namespace, "exec", pod, "-c", "openidm", "--",
       "env", `FO_KEEP=${[...keep].join("|")}`, "sh", "-c", script,
     ],
-    { env: kubeEnv(cfg), allowFailure: true },
+    { env: kubeEnv(cfg) },
   );
   const removed = r.stdout.trim().split("\n").filter(Boolean);
   for (const name of removed) detail(`retired ${name} (no longer generated)`);
