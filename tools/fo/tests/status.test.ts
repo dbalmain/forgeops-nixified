@@ -252,12 +252,17 @@ test("...but a collector WE deployed that schedules nowhere is a gap", () => {
   // fo-vector and tells the developer the log console works. An eligibility
   // regression leaves it collecting nothing, and "desired 0" would report that
   // as healthy.
-  assert.deepEqual(
-    gapsIn([
-      workload({ kind: "DaemonSet", metadata: { name: "fo-vector" }, status: { desiredNumberScheduled: 0, numberReady: 0 } }),
-    ]),
-    [{ what: "DaemonSet/fo-vector", have: 0, want: 1 }],
-  );
+  const daemon = workload({
+    kind: "DaemonSet",
+    metadata: { name: "fo-vector" },
+    status: { desiredNumberScheduled: 0, numberReady: 0 },
+  });
+  assert.deepEqual(gapsIn([daemon], new Set(["fo-vector"])), [
+    { what: "DaemonSet/fo-vector", have: 0, want: 1 },
+  ]);
+  // ...and with the log console turned off, nothing is promised, so a leftover
+  // DaemonSet is not held to it.
+  assert.deepEqual(gapsIn([daemon], new Set()), []);
 });
 
 test("an omitted replicas count still means one", () => {

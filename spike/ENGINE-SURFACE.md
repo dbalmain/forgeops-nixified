@@ -12,10 +12,10 @@ and what it settled at the time.
 >
 > | This document says | Current |
 > | --- | --- |
-> | 95 shared probes, engines identical | **765** each; they differ on `Math`/`JSON` `Symbol.toStringTag` |
+> | 95 shared probes, engines identical | **767** each; they differ on `Math`/`JSON` `Symbol.toStringTag` |
 > | the pinned `lib` was correct | the pin is sound but **wider than the engine** — 234 declarations are absent and cannot be removed |
 > | `tests/engine-lib.test.mjs` fails on a lib entry that declares an absent builtin | unsatisfiable, and replaced: **`fo build` fails on a USE**, before emission |
-> | six hand-written `emit:*` checks | 13 cases generated through the real esbuild+Babel pipeline |
+> | six hand-written `emit:*` checks | 15 cases generated through the real esbuild+Babel pipeline |
 > | existence tested with `typeof` | `in` on the holder plus instance sampling — `typeof Map.prototype.size` *throws* |
 >
 > The current method lives in `platform/typescript/tools/engine-coverage.mjs`
@@ -114,7 +114,7 @@ Both engines are the **same Rhino build** — `java`, `Packages` and
 `JavaImporter` are present, Nashorn's `Java` is absent — and they **agreed on
 all 95 shared probes**.
 
-> At 765 probes they do not. PingIDM's Rhino carries `Symbol.toStringTag` on
+> At 767 probes they do not. PingIDM's Rhino carries `Symbol.toStringTag` on
 > `Math` and `JSON`; PingAM's does not. Neither is reachable from anything
 > worth writing, so the shared `lib` survives — but it survives because each
 > program is checked against **its own** engine, not because the engines are

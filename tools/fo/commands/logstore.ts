@@ -80,6 +80,23 @@ export function removeLogStack(
     "--ignore-not-found",
   ]);
 
+  // Both carry `--ignore-not-found`, so a non-zero exit is a real failure and
+  // not an empty namespace. Ignoring it left cluster-scoped RBAC behind -- one
+  // ClusterRole and binding per env, accumulating silently, which is the exact
+  // leak this function was written to prevent.
+  for (const [what, r] of [
+    ["namespaced objects", namespaced],
+    ["cluster-scoped RBAC", cluster],
+  ] as const) {
+    if (r.code !== 0) {
+      throw new Error(
+        `could not delete the log console's ${what} (kubectl exited ` +
+          `${r.code}). Cluster-scoped objects outlive the namespace, so this ` +
+          `would leak:\n${(r.stderr || r.stdout).trim()}`,
+      );
+    }
+  }
+
   const touched = `${namespaced.stdout}${cluster.stdout}`.trim();
   if (!touched) {
     if (!opts.quiet) ok("no log console deployed");

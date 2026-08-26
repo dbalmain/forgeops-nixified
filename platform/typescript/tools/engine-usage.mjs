@@ -213,6 +213,19 @@ function bindingElementProperty(node, checker) {
  * So walk out to the `=`, take the type of its right-hand side, and descend
  * back down the keys collected on the way out.
  */
+/** Whether this node sits where a destructuring pattern's member sits. */
+function isPatternMember(node) {
+  const parent = node.parent;
+  return (
+    parent !== undefined &&
+    (ts.isPropertyAssignment(parent) ||
+      ts.isShorthandPropertyAssignment(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isArrayLiteralExpression(parent))
+  );
+}
+
 function destructuringSourceType(member, checker) {
   const keys = [];
   let node = member.parent; // the ObjectLiteralExpression
@@ -228,11 +241,24 @@ function destructuringSourceType(member, checker) {
       parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       parent.left === node
     ) {
+      // NOT NECESSARILY THE ASSIGNMENT. `({ inner: { map: m } = fallback } =
+      // rhs)` has an `=` inside the pattern too, and taking its right-hand
+      // side resolved `map` against the FALLBACK -- which is project code, so
+      // the builtin went unreported and the check looked clean. A default sits
+      // in a pattern-member position; the real assignment does not.
+      if (isPatternMember(parent)) {
+        node = parent;
+        continue;
+      }
       let type = checker.getTypeAtLocation(parent.right);
       for (const key of keys.reverse()) {
         const property = propertyByEscapedName(type, key, checker);
         if (property === undefined) return undefined;
-        type = checker.getTypeOfSymbolAtLocation(property, parent.right);
+        // Non-nullable: a property that a default covers is still read off the
+        // source when the source has it, and that is the reachable case.
+        type = checker.getNonNullableType(
+          checker.getTypeOfSymbolAtLocation(property, parent.right),
+        );
       }
       return type;
     }
@@ -499,6 +525,11 @@ function nativeSuperclassName(expression, checker, libFiles) {
   const declaredInLib = (symbol) =>
     (symbol?.declarations ?? []).some((d) => libFiles.has(d.getSourceFile()));
 
+  const readable = (symbol) =>
+    symbol.name.endsWith("Constructor")
+      ? symbol.name.slice(0, -"Constructor".length)
+      : symbol.name;
+
   // The identifier itself, following an import alias.
   let symbol = checker.getSymbolAtLocation(expression);
   if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
@@ -509,14 +540,26 @@ function nativeSuperclassName(expression, checker, libFiles) {
   // ...and failing that, what it EVALUATES to. `const Aliased = Error` and
   // `globalThis.Error` both leave the identifier declared in project code
   // while the value is still the native, which is what actually matters.
-  const type = checker.getTypeAtLocation(expression);
-  const typeSymbol = type.getSymbol();
-  if (declaredInLib(typeSymbol)) {
-    return typeSymbol.name.endsWith("Constructor")
-      ? typeSymbol.name.slice(0, -"Constructor".length)
-      : typeSymbol.name;
-  }
-  return undefined;
+  //
+  // Constituents, not just the type: `class X extends (c ? Error : Local)` has
+  // type `ErrorConstructor | typeof Local`, and a union has no symbol of its
+  // own -- so asking the top-level type returned nothing and the branch that
+  // picks the native at runtime went unreported.
+  const seen = new Set();
+  const search = (type) => {
+    if (type === undefined || seen.has(type)) return undefined;
+    seen.add(type);
+    const symbolOfType = type.getSymbol();
+    if (declaredInLib(symbolOfType)) return readable(symbolOfType);
+    if (type.isUnionOrIntersection()) {
+      for (const constituent of type.types) {
+        const found = search(constituent);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  };
+  return search(checker.getTypeAtLocation(expression));
 }
 
 export function findNativeSubclasses(tsconfigName) {

@@ -33,10 +33,14 @@ export async function down(
 
   step(`Removing namespace ${cfg.namespace}`);
   detail("the cluster and cert-manager stay, so the next `fo up` is quick");
+  // No `allowFailure`. `--ignore-not-found` already makes "it was not there"
+  // a success, so anything left that exits non-zero is a real failure -- and
+  // swallowing it meant `<env> removed` printed over the top of a namespace
+  // that is still terminating, or still there.
   await stream(
     "kubectl",
     ["delete", "namespace", cfg.namespace, "--ignore-not-found", "--wait=true"],
-    { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
+    { env: { KUBECONFIG: cfg.kubeconfig } },
   );
 
   const remaining = capture(

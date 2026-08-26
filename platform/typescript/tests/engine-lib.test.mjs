@@ -42,15 +42,12 @@ const projectRoot = join(here, "..");
 import {
   TSGO_LIB_DIR,
   TS_LIB_DIR,
-  libDigests,
-  requiredKeys,
-  requiredKeysUnion,
-  tsgoVersion,
-  typescriptVersion,
+  assertMeasurementCovers,
 } from "../tools/engine-coverage.mjs";
 import {
   RUNTIME_PROGRAMS,
   checkEngineUsage,
+  findNativeSubclasses,
   formatFindings,
 } from "../tools/engine-usage.mjs";
 
@@ -66,10 +63,6 @@ function readTsconfig(name) {
   const text = readFileSync(join(projectRoot, name), "utf8");
   return JSON.parse(text);
 }
-
-// Both runtime programs pin the same list today; derive it rather than
-// restate it, so a divergence shows up as a failure and not as a stale const.
-const LIBS = readTsconfig("tsconfig.json").compilerOptions.lib;
 
 function libFile(entry, libDir) {
   return join(libDir, `lib.${entry.toLowerCase()}.d.ts`);
@@ -91,45 +84,56 @@ test("every lib entry the runtime programs name actually exists", () => {
   }
 });
 
-test("both compilers' libs promise the same builtins", () => {
-  // `fo build` type-checks with tsgo; this analysis runs on the `typescript`
-  // package, because tsgo exposes no compiler API. The two ship DIFFERENT
-  // copies of every one of these files - all twelve differ byte for byte - so
-  // "the census describes what the build enforces" is a claim that has to be
-  // checked rather than assumed. It holds today; a native-preview bump is
-  // exactly when it would stop.
-  assert.deepEqual(
-    requiredKeys(LIBS, TSGO_LIB_DIR).keys,
-    requiredKeys(LIBS, TS_LIB_DIR).keys,
-    "tsgo and typescript no longer declare the same builtins for the pinned " +
-      "lib. The union is what gets probed, so nothing is unmeasured - but the " +
-      "use-site check runs on typescript's copies while the build runs on " +
-      "tsgo's, and that is no longer the same question.",
-  );
+test("the measurement still covers what the compilers actually declare", () => {
+  // Drives the REAL pre-emission assertion rather than restating it. This was
+  // three separate tests that reimplemented the same comparisons, and they
+  // drifted: the build's version walked only the digests it could see, so a
+  // manifest entry for a lib no longer pinned survived, while the test's
+  // `deepEqual` caught it -- after emission.
+  //
+  // What it covers: every interface classified, tsgo and typescript declaring
+  // the same builtins (they ship different bytes for all twelve pinned files),
+  // every declared builtin probed on both engines, and the manifest matching
+  // both compilers exactly.
+  assertMeasurementCovers(surface, coverage);
 });
 
-test("every builtin the pinned lib promises has actually been probed", () => {
-  // The circularity-breaker. `fo doctor --engines` generates its probes FROM
-  // engine-surface.json, so without this the surface can only ever confirm
-  // what it already contains: a builtin nobody thought of is not measured,
-  // not reported, and silently assumed present.
-  const { keys, unclassified } = requiredKeysUnion(LIBS);
-  assert.deepEqual(
-    unclassified,
-    [],
-    "engine-coverage.mjs cannot classify these interfaces as runtime-bearing " +
-      "or structural, so it does not know whether to require them",
+test("...and says so when it does not", () => {
+  // The positive control. `assertMeasurementCovers` returning nothing is what
+  // a passing build looks like AND what a function that checks nothing looks
+  // like.
+  assert.throws(
+    () =>
+      assertMeasurementCovers(surface, {
+        ...coverage,
+        lib: {
+          ...coverage.lib,
+          tsgo: { ...coverage.lib.tsgo, ES5: "0000000000000000" },
+        },
+      }),
+    /different declaration files/,
   );
-  for (const engine of ["am", "idm"]) {
-    const unprobed = keys.filter((k) => !(k in surface[engine]));
-    assert.deepEqual(
-      unprobed,
-      [],
-      `${unprobed.length} builtin(s) the pinned lib declares were never ` +
-        `probed on ${engine}. Run \`node tools/engine-coverage.mjs --seed\` ` +
-        "then `fo doctor --engines --record` against a running stack.",
-    );
-  }
+  assert.throws(
+    () => assertMeasurementCovers(surface, { ...coverage, requiredKeys: 1 }),
+    /requiredKeys 1 ->/,
+  );
+  assert.throws(
+    () =>
+      assertMeasurementCovers(surface, {
+        ...coverage,
+        lib: {
+          ...coverage.lib,
+          tsgo: { ...coverage.lib.tsgo, "ES2099.Imaginary": "abc" },
+        },
+      }),
+    /no longer pinned/,
+  );
+  const short = { ...surface, am: { ...surface.am } };
+  delete short.am["Array#map"];
+  assert.throws(
+    () => assertMeasurementCovers(short, coverage),
+    /never probed on am/,
+  );
 });
 
 test("no source uses a builtin the engine lacks", () => {
@@ -178,12 +182,15 @@ test("the usage check can still fail, in every form it claims to resolve", () =>
       "Float32Array#some", // binding pattern, computed literal key
       "RegExp#flags",
       "Uint8Array#join", // nested destructuring assignment, computed key
+      "Uint8Array#reverse", // ...and one behind a nested pattern DEFAULT
       "Uint8Array#slice", // nested binding pattern
     ],
-    "the fixture reaches twelve absent builtins, one per resolvable form. " +
-      "Four of these were added after a review found them silently missed, " +
-      "and one - the parameter case - the fixture had claimed to cover and " +
-      "did not.",
+    "the fixture reaches thirteen absent builtins, one per resolvable form. " +
+      "Five were added after reviews found them silently missed, and one - " +
+      "the parameter case - the fixture had claimed to cover and did not. " +
+      "The default case was worse than a miss: the `=` in `{ x } = fallback` " +
+      "was read as the assignment, so the member resolved against the " +
+      "fallback object and came back clean.",
   );
 });
 
@@ -201,33 +208,6 @@ test("the usage check resolves well-known symbol members to their holder", () =>
     findings.some((f) => f.key === "Math.[Symbol.toStringTag]"),
     "the fixture reads `Math[Symbol.toStringTag]`, which PingAM's engine " +
       `lacks; found ${JSON.stringify(findings.map((f) => f.key))}`,
-  );
-});
-
-test("the measurement still covers the lib files it was taken against", () => {
-  // A compiler upgrade can add a member to a lib file, and nothing else here
-  // would notice: the new declaration would simply never be probed, and every
-  // test above would stay green while the pin described a smaller lib than the
-  // one in use. Both compilers are frozen - the build enforces with one and
-  // this analysis runs on the other.
-  assert.equal(
-    coverage.typescript,
-    typescriptVersion(),
-    "TypeScript changed since the engine surface was audited; re-probe with " +
-      "`fo doctor --engines --record`, then `node tools/engine-coverage.mjs --manifest`",
-  );
-  assert.equal(
-    coverage.tsgo,
-    tsgoVersion(),
-    "tsgo changed since the engine surface was audited; re-probe with " +
-      "`fo doctor --engines --record`, then `node tools/engine-coverage.mjs --manifest`",
-  );
-  assert.deepEqual(
-    { tsgo: libDigests(LIBS, TSGO_LIB_DIR), typescript: libDigests(LIBS, TS_LIB_DIR) },
-    coverage.lib,
-    "a pinned lib file changed since the engine surface was audited; " +
-      "re-probe with `fo doctor --engines --record`, then " +
-      "`node tools/engine-coverage.mjs --manifest`",
   );
 });
 
@@ -316,4 +296,26 @@ test("engine-lib.d.ts only declares members the engine has", () => {
       );
     }
   }
+});
+
+test("the native-subclass gate can still fail, however the native is named", () => {
+  // `emit:subclass-error` and `emit:subclass-map` prove the LOWERING fails on
+  // the engines. They say nothing about whether the source gate can see it,
+  // and the gate resolves through the checker - so it has escapes only a
+  // fixture will find. The union case was one: `class X extends (c ? Error :
+  // Local)` types as a union, a union carries no symbol of its own, and the
+  // branch that picks the native went unreported.
+  const found = findNativeSubclasses(
+    join("tests", "fixtures", "tsconfig.subclass.json"),
+  );
+  assert.deepEqual(
+    found.map((f) => f.native).sort(),
+    ["Error", "Error", "Error", "Map"],
+    "the fixture names a native four ways - directly, through a `const` " +
+      "alias, through `globalThis`, and as one branch of a union",
+  );
+  assert.ok(
+    !found.some((f) => f.native === "Local"),
+    "extending a project class is legitimate and must not be flagged",
+  );
 });

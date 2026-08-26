@@ -8,7 +8,7 @@
 //
 // EVERY MEMBER HERE WAS PROBED ON A RUNNING STACK, in both PingAM's
 // scripted-decision-node engine and PingIDM's endpoint engine -- the same
-// Rhino build, 765 probes each, differing only on `Math`/`JSON`
+// Rhino build, 767 probes each, differing only on `Math`/`JSON`
 // `Symbol.toStringTag`. Do not add a member you have not seen exist:
 // `useBuiltIns: false` means Babel emits no polyfill, so a declaration that is
 // wrong here type-checks and then throws in production.

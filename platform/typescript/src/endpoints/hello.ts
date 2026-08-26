@@ -58,9 +58,9 @@ export default defineEndpoint({
       response: GREETING_RESPONSE,
       handler: ({ params, query, log }) => {
         if (params.name === "nobody") {
-          // A tagged fault, never a subclassed Error: `Reflect` is absent in
-          // IDM's script engine, so Babel's `_wrapNativeSuper` silently breaks
-          // `instanceof`.
+          // A tagged fault, never a subclassed Error. Subclassing a native
+          // was probed on both engines: the object constructs, `instanceof
+          // Error` is true, and `instanceof YourError` is false.
           throw badRequest("There is no greeting for nobody.", {
             name: params.name,
           });

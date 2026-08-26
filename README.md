@@ -195,11 +195,14 @@ changing `v.integer({ max: 100 })` breaks the handler that relied on it at
 compile time. The `lib` is pinned to what the script engine actually provides —
 no `Proxy`, no `Reflect`, no `Array#flat` — so runtime-impossible code fails to
 type-check. And you never subclass a native — `Error`, `Map`, `Array`, any of
-them: `Reflect` is absent, which makes Babel's `_wrapNativeSuper` break
-`instanceof` silently. Use the tagged faults (`badRequest`, `notFound`, …)
-instead, and compose rather than extend — that is measured, not deduced: an
-`Error` subclass constructs but loses its own `instanceof`, and a `Map`
-subclass does not construct at all. `async`, `await` and generators are banned
+them. That is measured rather than reasoned: Babel's `_wrapNativeSuper` was
+probed on both live engines, and an `Error` subclass constructs but loses its
+own `instanceof`, while a `Map` subclass does not construct at all. (The
+tempting explanation — "`Reflect` is absent" — does not hold: the lowering
+falls back to `Function#bind` and `Object.setPrototypeOf`, both present.) Two
+natives failing two different ways is a policy boundary rather than proof about
+every constructor, and it is treated as one. Use the tagged faults
+(`badRequest`, `notFound`, …) instead, and compose rather than extend. `async`, `await` and generators are banned
 too: an endpoint's response body is the script's completion value and an
 AM node's outcome is read when `main` returns, so an unawaited Promise is all
 the host would ever see — and Rhino has no event loop here to settle it. `fo build` rejects a native superclass by resolving it through the
@@ -211,7 +214,7 @@ helpers are simply not in the probed corpus.
 That `lib` is not guesswork, and the proof is exhaustive rather than
 representative. `tools/engine-coverage.mjs` reads the lib files the tsconfigs
 name and enumerates **every** declaration that carries a runtime value — 728 of
-them — and `fo doctor --engines` probes all 728 on both engines, plus 13
+them — and `fo doctor --engines` probes all 728 on both engines, plus 15
 behavioural cases and 24 deliberate out-of-pin checks (`Proxy`, `Object.hasOwn`,
 Rhino's `java`/`Packages`): **767 probes each**. A test fails if the pin
 promises something the probe never checked, which is what stops the measurement

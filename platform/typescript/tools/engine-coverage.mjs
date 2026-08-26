@@ -306,14 +306,25 @@ export function assertMeasurementCovers(surface, coverage) {
   if (coverage.tsgo !== tsgoVersion()) {
     stale.push(`tsgo ${coverage.tsgo} -> ${tsgoVersion()}`);
   }
+  if (coverage.requiredKeys !== keys.length) {
+    stale.push(`requiredKeys ${coverage.requiredKeys} -> ${keys.length}`);
+  }
   const digests = {
     tsgo: libDigests(libs, TSGO_LIB_DIR),
     typescript: libDigests(libs, TS_LIB_DIR),
   };
+  // Compared as WHOLE objects, in both directions. Walking only the current
+  // entries let a stale extra one survive: drop a lib from the tsconfig and
+  // the manifest kept describing a file nobody reads any more, while the build
+  // reported the measurement fresh.
   for (const which of ["tsgo", "typescript"]) {
+    const recorded = coverage.lib?.[which] ?? {};
     for (const [entry, digest] of Object.entries(digests[which])) {
-      if (coverage.lib?.[which]?.[entry] !== digest) {
-        stale.push(`${which} lib.${entry}`);
+      if (recorded[entry] !== digest) stale.push(`${which} lib.${entry}`);
+    }
+    for (const entry of Object.keys(recorded)) {
+      if (!(entry in digests[which])) {
+        stale.push(`${which} lib.${entry} (recorded, no longer pinned)`);
       }
     }
   }

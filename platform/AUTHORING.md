@@ -236,10 +236,12 @@ just above it. `action.goTo("hihg")` does not compile, and neither does
 is invisible to any check that reads the built artefact looking for quoted
 outcome names.
 
-Write `outcomes` as a literal array. Both `outcomes: [...names]` and
-`outcomes: ["high", ...names]` are rejected: AM needs the exits statically, and
-a spread widens the outcome type to `string`, which switches every check above
-off without changing a line of `main`.
+Write `outcomes` so the names survive as literals. What is rejected is a spread
+that WIDENS — `outcomes: [...names]` and `outcomes: ["high", ...names]` where
+`names: string[]`, because the outcome type collapses to `string` and every
+check above switches off without a line of `main` changing. Spreading a literal
+tuple is fine and stays checked:
+`const names = ["high", "low"] as const; outcomes: [...names]`.
 
 And let `main`'s parameter be **inferred**. Annotating it replaces the narrowed
 type, and TypeScript accepts a wider `{ goTo(outcome: string): void }` because

@@ -1,4 +1,5 @@
 import { capture } from "../lib/proc.ts";
+import { VECTOR_NAME } from "../logstack.ts";
 import { arrayOf, bool, decode, num, obj, opt, str } from "../lib/shape.ts";
 import { dim, green, heading, red, table, yellow } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
@@ -115,8 +116,16 @@ export type WorkloadGap = { what: string; have: number; want: number };
  * Kubernetes is right that a DaemonSet desiring zero pods is not unhealthy --
  * it just has no eligible node. For a collector we installed and told the
  * developer about, "no eligible node" is a failure, not a shrug.
+ *
+ * Derived from the config rather than named: the string comes from
+ * `logstack.ts`, so it cannot drift from what is actually deployed, and it is
+ * only expected while the log console is ON. Otherwise a leftover `fo-vector`
+ * from before `logs.backend: off` would be held to a promise nobody is making
+ * any more.
  */
-const EXPECTED_ON_EVERY_NODE = new Set(["fo-vector"]);
+function expectedOnEveryNode(cfg: ResolvedConfig): ReadonlySet<string> {
+  return cfg.logs.backend === "off" ? new Set() : new Set([VECTOR_NAME]);
+}
 
 /**
  * Workloads that have not produced everything they were asked for.
@@ -152,7 +161,10 @@ export function workloadGaps(cfg: ResolvedConfig): WorkloadGap[] {
     );
   }
 
-  return gapsIn(decode(r.stdout, "kubectl get workloads", WORKLOAD_LIST).items);
+  return gapsIn(
+    decode(r.stdout, "kubectl get workloads", WORKLOAD_LIST).items,
+    expectedOnEveryNode(cfg),
+  );
 }
 
 type Workload = ReturnType<typeof WORKLOAD_LIST>["items"][number];
@@ -163,7 +175,10 @@ type Workload = ReturnType<typeof WORKLOAD_LIST>["items"][number];
  * The case that matters has no pod in it at all, which makes it impossible to
  * reach through anything that starts from a pod list.
  */
-export function gapsIn(items: Workload[]): WorkloadGap[] {
+export function gapsIn(
+  items: Workload[],
+  expected: ReadonlySet<string> = new Set(),
+): WorkloadGap[] {
   const gaps: WorkloadGap[] = [];
   for (const item of items) {
     const what = `${item.kind}/${item.metadata.name}`;
@@ -175,7 +190,7 @@ export function gapsIn(items: Workload[]): WorkloadGap[] {
       // healthy is the same false success this function exists to stop.
       const want = Math.max(
         item.status?.desiredNumberScheduled ?? 0,
-        EXPECTED_ON_EVERY_NODE.has(item.metadata.name) ? 1 : 0,
+        expected.has(item.metadata.name) ? 1 : 0,
       );
       const have = item.status?.numberReady ?? 0;
       if (have < want) gaps.push({ what, have, want });

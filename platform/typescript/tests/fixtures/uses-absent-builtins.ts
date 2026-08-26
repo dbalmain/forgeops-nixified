@@ -60,6 +60,15 @@ export function usesAbsentBuiltins(): number {
   let join: unknown = null;
   ({ inner: { ["join"]: join } } = { inner: new Uint8Array(2) });
 
+  // ...and the same again with a DEFAULT on the nested pattern. The `=` in a
+  // default is not the assignment, and reading its right-hand side as the
+  // source resolved the member against the fallback object -- project code, so
+  // the builtin was silently not reported.
+  let reverse: unknown = null;
+  ({ nested: { ["reverse"]: reverse } = { reverse: null } } = {
+    nested: new Uint8Array(2) as Uint8Array | undefined,
+  });
+
   return (
     doubled.length +
     flags.length +
@@ -73,6 +82,7 @@ export function usesAbsentBuiltins(): number {
         !!indexOf &&
         !!lastIndexOf &&
         !!join &&
+        !!reverse &&
         !!viaParameter(samples),
     )
   );

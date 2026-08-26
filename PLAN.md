@@ -420,9 +420,12 @@ Carried over intact:
   IDM's runtime bans. All-or-nothing publication by atomic rename.
 - **The runtime bans**: default parameters, `const` in a loop init, trailing
   comma in a parameter list, bare `Reflect`, bare `Proxy`.
-- **Never subclass `Error`** — `Reflect` is absent, so Babel's
-  `_wrapNativeSuper` silently breaks `instanceof`. Tagged fault objects plus an
-  ESLint rule that rejects both the subclass and the check.
+- **Never subclass `Error`** — Babel's `_wrapNativeSuper` silently breaks
+  `instanceof`. Tagged fault objects plus an ESLint rule that rejects both the
+  subclass and the check. *(Superseded by phase 6.4: the `Reflect` explanation
+  given here is wrong, the ban covers every native rather than `Error`, it is
+  enforced by the checker rather than by ESLint, and the `instanceof` rule is
+  gone.)*
 - **Typed routing / validation / OpenAPI 3.1** for IDM custom endpoints.
 - **`lib` pinned to what the engine actually provides**, so runtime-impossible
   code fails to type-check.
@@ -1284,10 +1287,12 @@ Four were verified independently before being acted on; all seven are fixed.
   subclassing are banned.** An `async` function is assignable to a `() => void`
   handler, so it compiles — and an endpoint's response body is the script's
   completion value, an AM node's outcome is read when `main` returns, and Rhino
-  has no event loop here to settle a Promise. Babel's `_wrapNativeSuper` needs
-  `Reflect`, which is absent, so `instanceof` silently breaks for *any* native
-  superclass and not just `Error`. The native list is derived from the pinned
-  lib so it cannot go stale.
+  has no event loop here to settle a Promise. Babel's `_wrapNativeSuper` breaks for *any*
+  native superclass and not just `Error`. *(Superseded by phase 6.4: the
+  reasoning offered here — "`_wrapNativeSuper` needs `Reflect`, which is
+  absent" — is wrong. It falls back to `Function#bind` and
+  `Object.setPrototypeOf`, both present. The conclusion survives because it was
+  then measured; the argument did not.)*
 
 The honest claim, which the code now states rather than implies: *direct,
 statically resolvable builtin uses in this package's TypeScript are rejected

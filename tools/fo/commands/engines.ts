@@ -372,7 +372,7 @@ export async function doctorEngines(
       fail("both engines must answer before the surface can be recorded");
       return false;
     }
-    // ...and a measurement that answered 764 of 765 keys is also half a
+    // ...and a measurement that answered all but one key is also half a
     // measurement. Recording writes what the probe returned, so a key it
     // skipped would simply vanish from the file: the surface would shrink to
     // whatever the run happened to cover, and the coverage test would then
