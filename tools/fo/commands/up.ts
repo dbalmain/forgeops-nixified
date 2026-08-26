@@ -140,8 +140,22 @@ export async function up(
 function startTicker(cfg: ResolvedConfig): { stop: () => void } {
   let last = "";
   const reported = new Set<string>();
+  let readFailures = 0;
   const t = setInterval(() => {
-    const pods = getPods(cfg);
+    // GUARDED. `getPods` throws on a genuine kubectl failure now, and this
+    // callback runs outside the awaited helm promise -- an unhandled throw here
+    // would take the whole process down mid-install, which is the exact
+    // opposite of the decision not to interrupt helm. A transient read failure
+    // is reported once and then ignored; helm stays authoritative.
+    let pods;
+    try {
+      pods = getPods(cfg);
+    } catch (e) {
+      if (readFailures++ === 0) {
+        detail(`could not read pods while helm runs: ${(e as Error).message}`);
+      }
+      return;
+    }
     if (pods.length === 0) return;
     const line = `${pods.filter(settled).length}/${pods.length} pods settled`;
     if (line !== last) {

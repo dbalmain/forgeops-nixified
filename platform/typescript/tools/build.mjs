@@ -31,8 +31,11 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { assertNoAnnotatedActionParameters } from "./am-source-rules.mjs";
-import { assertNoAbsentBuiltinUses } from "./engine-usage.mjs";
+import { assertMeasurementCovers } from "./engine-coverage.mjs";
+import {
+  assertNoAbsentBuiltinUses,
+  assertNoNativeSubclasses,
+} from "./engine-usage.mjs";
 import { findRuntimeBanViolations } from "./idm-runtime-bans.mjs";
 import { generateManagedTypes } from "./managed-types.mjs";
 import { GLOBAL_NAME, bundle, downlevel } from "./pipeline.mjs";
@@ -126,12 +129,21 @@ function typeCheck() {
   // throws inside somebody's login. tsgo cannot see that, because the pinned
   // `lib` legitimately declares those members and TypeScript has no way to
   // un-declare one.
+  // FIRST, because the two checks below read `engine-surface.json` and are
+  // only worth anything if it still describes the compilers in use. After a
+  // bump, a newly declared builtin is simply absent from the file rather than
+  // recorded `false`, and an absent key reads as "fine".
+  assertMeasurementCovers(
+    JSON.parse(readFileSync(join(projectRoot, "framework", "engine-surface.json"), "utf8")),
+    JSON.parse(readFileSync(join(projectRoot, "framework", "engine-coverage.json"), "utf8")),
+  );
+
   assertNoAbsentBuiltinUses();
 
-  // The one PingAM narrowing the type system cannot hold on its own: an
-  // explicit annotation on `main`'s parameter takes `goTo` back to accepting
-  // any string, and TypeScript's method-parameter bivariance permits it.
-  assertNoAnnotatedActionParameters();
+  // Same step, same reason: `_wrapNativeSuper` was measured to break on both
+  // engines, and a syntactic rule could not tell a real `Map` from a project
+  // class that happens to be called one.
+  assertNoNativeSubclasses();
 }
 
 function entryPoints() {
@@ -729,7 +741,13 @@ async function once() {
 
 if (typeCheckOnly) {
   // `npm run type-check`. Same function, same program list, no emit.
+  //
+  // It regenerates managed types FIRST, exactly as the build does. It did not,
+  // and the two paths then answered different questions: a changed
+  // `managed.json` meant the type-check ran against a stale `src/generated/`
+  // while the build regenerated it and emitted against the new one.
   try {
+    generateManaged();
     typeCheck();
     process.exit(0);
   } catch (error) {

@@ -32,9 +32,15 @@ export function usesAbsentBuiltins(): number {
   const key: "fill" | "subarray" = Math.random() > 0.5 ? "fill" : "subarray";
   const byUnion = samples[key];
 
-  // Binding pattern, including through a parameter and a nested pattern.
+  // Binding pattern, and a nested one.
   const { forEach } = samples;
   const { inner: { slice } } = { inner: new Uint8Array(4) };
+
+  // A computed key that is still a literal, and a renamed one -- both name a
+  // property the compiler can resolve, and both were invisible when the check
+  // rejected every `ComputedPropertyName` out of hand.
+  const { ["some"]: some } = samples;
+  const { "every": every } = samples;
 
   // Destructuring assignment, which reads a property without ever naming it
   // in a property-access position.
@@ -44,11 +50,41 @@ export function usesAbsentBuiltins(): number {
   let indexOf: unknown = null;
   ({ indexOf } = samples);
 
+  // ...and the quoted form, which `getPropertySymbolOfDestructuringAssignment`
+  // returns nothing for.
+  let lastIndexOf: unknown = null;
+  ({ "lastIndexOf": lastIndexOf } = samples);
+
+  // ...and the same thing one level down, which needs the source type walked
+  // rather than read off the pattern.
+  let join: unknown = null;
+  ({ inner: { ["join"]: join } } = { inner: new Uint8Array(2) });
+
   return (
     doubled.length +
     flags.length +
-    Number(!!byLiteral && !!byUnion && !!forEach && !!slice && !!indexOf)
+    Number(
+      !!byLiteral &&
+        !!byUnion &&
+        !!forEach &&
+        !!slice &&
+        !!some &&
+        !!every &&
+        !!indexOf &&
+        !!lastIndexOf &&
+        !!join &&
+        !!viaParameter(samples),
+    )
   );
+}
+
+/**
+ * A PARAMETER binding pattern. The fixture claimed to cover this and did not:
+ * a parameter's pattern has no initialiser, so its source type comes from the
+ * parameter's own declared type rather than from an expression.
+ */
+function viaParameter({ findIndex }: Float32Array): boolean {
+  return typeof findIndex === "function";
 }
 
 /**

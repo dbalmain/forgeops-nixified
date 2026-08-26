@@ -1189,7 +1189,7 @@ What replaced it:
   because the measurement was too small to notice. It is replaced by a
   **use-site** check that resolves every property access in both programs
   through the compiler and fails the build on a use of an absent builtin.
-- **The engines are not identical.** At 97 probes they agreed; at 765 they
+- **The engines are not identical.** At 97 probes they agreed; at 767 they
   differ on `Math[Symbol.toStringTag]` and `JSON[Symbol.toStringTag]`, present
   on IDM and absent on AM. The shared `lib` survives because each program is
   now checked against **its own** engine.
@@ -1201,8 +1201,8 @@ What replaced it:
   through a preset-env change that started emitting `_toConsumableArray`.
 - **The measurement is frozen to what it covered.**
   `framework/engine-coverage.json` records both compiler versions and a digest
-  per lib file for each; a bump fails the build with "re-probe" rather than
-  silently widening the pin.
+  per lib file for each, and `fo build` checks it before emitting, so a bump
+  fails the build with "re-probe" rather than silently widening the pin.
 
 **Two measurement bugs found by expanding the coverage**, both of which would
 have gone into the record as fact:
@@ -1293,6 +1293,66 @@ The honest claim, which the code now states rather than implies: *direct,
 statically resolvable builtin uses in this package's TypeScript are rejected
 before emission; dynamic access, structural erasure and bundled dependency
 implementations are outside the proof.*
+
+### Phase 6.4 — the round-4 review — **DONE**
+
+Codex reviewed 6.3 and found six more. Two of them overturned something the
+previous round had asserted.
+
+- **A type-level close for the `goTo` annotation exists after all.** 6.3
+  concluded it did not and closed the hole with a syntactic source rule; codex
+  produced the shape, and it holds under tsgo. `MainMustNotWiden` infers `Main`
+  as a second `const` parameter and reads the outcome type back out of whatever
+  annotation the author supplied — rejecting `string`, `any`, and one extra
+  literal, while still accepting an exact or narrower one. The source rule and
+  its fixtures are deleted. It would also have been easy to walk past: an object
+  method, a `main` defined elsewhere, an aliased `defineAmScript`. A constraint
+  that travels with the type has none of those seams.
+- **"No `Reflect`, therefore every native subclass breaks" was never
+  measured.** Babel's `_construct` falls back to `Function#bind` and
+  `Object.setPrototypeOf` when `Reflect.construct` is missing, and both are
+  recorded present — so the inference does not follow, and the project had been
+  generalising from one measurement of `Error`. Measured properly, both cases
+  fail on both engines and for *different* reasons: an `Error` subclass
+  constructs and satisfies `instanceof Error` but not `instanceof` its own
+  class, while a `Map` subclass does not construct at all. The ban stands on a
+  stronger footing than the one written down, and `emit:subclass-error` /
+  `emit:subclass-map` keep it live.
+- **The native-subclass ban moved from eslint to the checker.** A syntactic
+  selector had escapes (`const E = Error`, `globalThis.Error`) and false
+  positives (a project class named `Map`), and the companion
+  `instanceof /Error$/` rule caught `instanceof DomainError` for no reason. It
+  resolves the heritage expression through the compiler now, on the build path;
+  the `instanceof` rule is gone, because with subclassing rejected there is
+  nothing left for it to protect.
+- **`npm run check` could emit against types it never checked.** Its
+  `type-check` step did not regenerate managed types and the build did, so a
+  changed `managed.json` meant the two ran on different `src/generated/`. The
+  check is `lint && build && test` now — the build does its own type-check, in
+  the right order — and the `--type-check-only` path regenerates first so the
+  two paths cannot disagree again.
+- **`fo status` still had the missing-workload false success** that `waitReady`
+  had been fixed for, so the two commands disagreed about the same cluster.
+  It counts workload gaps now. A DaemonSet desiring zero pods is healthy by
+  Kubernetes' reckoning and is left alone — except `fo-vector`, which we install
+  and promise: scheduling nowhere means the log console collects nothing.
+- **The progress ticker could kill `fo up`.** `getPods` throws on a real
+  kubectl failure now, and the ticker called it inside an unguarded
+  `setInterval` outside the awaited helm promise. A transient read failure
+  would have taken the process down mid-install — the exact opposite of the
+  decision not to interrupt helm.
+- **Computed and quoted destructuring keys escaped the use-site check.**
+  `const { ["map"]: m } = arr` and `({ "map": m } = arr)` resolve now; the
+  second needs the right-hand side's type walked, because the pattern's own
+  type describes the *targets*, not the source. The fixture also claimed a
+  parameter-binding case it did not have. Twelve forms, one case each.
+- **The measurement's own gates ran after emission.** Coverage, compiler-surface
+  equality and manifest freshness lived only in a test, and a direct `fo build`
+  never ran it — so after a compiler bump a newly declared builtin would be
+  *absent* from the surface rather than recorded `false`, and an absent key
+  reads as fine. They run before emission now, and the analysis program refuses
+  to report a clean result if TypeScript disagrees with tsgo about the sources
+  at all.
 
 ### Bug found on the way: `fo amster` failed on a first install
 

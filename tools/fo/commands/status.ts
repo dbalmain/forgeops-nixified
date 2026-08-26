@@ -110,6 +110,15 @@ const WORKLOAD_LIST = obj({
 export type WorkloadGap = { what: string; have: number; want: number };
 
 /**
+ * DaemonSets this project deploys and promises will run somewhere.
+ *
+ * Kubernetes is right that a DaemonSet desiring zero pods is not unhealthy --
+ * it just has no eligible node. For a collector we installed and told the
+ * developer about, "no eligible node" is a failure, not a shrug.
+ */
+const EXPECTED_ON_EVERY_NODE = new Set(["fo-vector"]);
+
+/**
  * Workloads that have not produced everything they were asked for.
  *
  * WHY THIS EXISTS ALONGSIDE THE POD CHECK. `waitReady` used to ask only
@@ -159,9 +168,15 @@ export function gapsIn(items: Workload[]): WorkloadGap[] {
   for (const item of items) {
     const what = `${item.kind}/${item.metadata.name}`;
     if (item.kind === "DaemonSet") {
-      // A DaemonSet's desired count comes from the scheduler, not the spec:
-      // zero eligible nodes is zero wanted, not a gap.
-      const want = item.status?.desiredNumberScheduled ?? 0;
+      // A DaemonSet's desired count comes from the scheduler, not the spec, so
+      // zero eligible nodes is zero wanted rather than a gap -- EXCEPT for one
+      // we put there ourselves and promised would run. `fo-vector` scheduling
+      // nowhere means the log console collects nothing, and reporting that as
+      // healthy is the same false success this function exists to stop.
+      const want = Math.max(
+        item.status?.desiredNumberScheduled ?? 0,
+        EXPECTED_ON_EVERY_NODE.has(item.metadata.name) ? 1 : 0,
+      );
       const have = item.status?.numberReady ?? 0;
       if (have < want) gaps.push({ what, have, want });
     } else if (item.kind === "Job") {
@@ -355,11 +370,19 @@ export function status(cfg: ResolvedConfig): void {
     }),
   );
 
+  // Not just the pods. A Deployment that produced NO pod contributes nothing
+  // unready, so `fo status` exited zero for a stack missing a component while
+  // README described it as an "anything unready" gate. `waitReady` was fixed
+  // and this was not, which left the two disagreeing about the same cluster.
+  const short = workloadGaps(cfg);
+  for (const g of short) console.log(`   ${yellow(formatGap(g))}`);
+
   const unready = blockers(pods);
-  if (unready.length > 0) {
-    console.log(
-      `   ${dim(`${unready.length} pod(s) not ready. try: fo up`)}`,
-    );
+  if (unready.length > 0 || short.length > 0) {
+    const parts = [];
+    if (unready.length > 0) parts.push(`${unready.length} pod(s) not ready`);
+    if (short.length > 0) parts.push(`${short.length} workload(s) short`);
+    console.log(`   ${dim(`${parts.join(", ")}. try: fo up`)}`);
     process.exitCode = 1;
   }
 }

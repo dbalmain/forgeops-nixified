@@ -30,6 +30,35 @@ function record(out: Report, key: string, run: () => boolean): void {
   }
 }
 
+/**
+ * Subclassing a native, which Babel lowers through `_wrapNativeSuper` and
+ * `_construct`.
+ *
+ * WHY THESE ARE MEASURED RATHER THAN REASONED ABOUT. `_construct` prefers
+ * `Reflect.construct`, and this engine has no `Reflect` -- but it FALLS BACK to
+ * `Function#bind` plus `Object.setPrototypeOf`, and both of those are recorded
+ * present. "No Reflect, therefore every native subclass breaks" simply does not
+ * follow, and the project asserted it anyway on the strength of one measurement
+ * of `Error`.
+ *
+ * Both cases fail, and finer-grained probes said why -- differently for each:
+ *
+ *   - `new MyError("x")` constructs and `instanceof Error` is true, but
+ *     `instanceof MyError` is FALSE. The prototype is not restored.
+ *   - `new MyMap()` does not construct at all. It throws before anything else
+ *     can be asked.
+ *
+ * Which is a stronger reason to ban the pattern than the one that was written
+ * down, and a reason that is now a live measurement rather than an inference.
+ */
+class MyMap extends Map<string, number> {
+  double(key: string): number {
+    return (this.get(key) ?? 0) * 2;
+  }
+}
+
+class MyError extends Error {}
+
 class Base {
   constructor(readonly tag: string) {}
   describe(): string {
@@ -114,6 +143,18 @@ export default function probe(): Report {
   record(out, "computed-key", () => {
     const k = "dyn";
     return { [k + "1"]: true }["dyn1"] === true;
+  });
+
+  // Native subclassing. Split per native, because the answer is not obviously
+  // the same for all of them: `Error` is special-cased in every engine.
+  record(out, "subclass-map", () => {
+    const m = new MyMap();
+    m.set("a", 2);
+    return m instanceof MyMap && m instanceof Map && m.double("a") === 4;
+  });
+  record(out, "subclass-error", () => {
+    const e = new MyError("boom");
+    return e instanceof MyError && e instanceof Error && e.message === "boom";
   });
 
   // Optional chaining and nullish coalescing lower to plain conditionals, but

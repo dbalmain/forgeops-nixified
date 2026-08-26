@@ -167,15 +167,23 @@ test("the usage check can still fail, in every form it claims to resolve", () =>
   assert.deepEqual(
     findings.map((f) => f.key).sort(),
     [
+      "Float32Array#every", // binding pattern, quoted key
       "Float32Array#fill", // element access, finite union key
+      "Float32Array#findIndex", // PARAMETER binding pattern
       "Float32Array#forEach", // binding pattern
       "Float32Array#indexOf", // destructuring assignment
+      "Float32Array#lastIndexOf", // destructuring assignment, quoted key
       "Float32Array#map", // property access
       "Float32Array#reduce", // element access, literal key
+      "Float32Array#some", // binding pattern, computed literal key
       "RegExp#flags",
+      "Uint8Array#join", // nested destructuring assignment, computed key
       "Uint8Array#slice", // nested binding pattern
     ],
-    "the fixture reaches seven absent builtins, one per resolvable form",
+    "the fixture reaches twelve absent builtins, one per resolvable form. " +
+      "Four of these were added after a review found them silently missed, " +
+      "and one - the parameter case - the fixture had claimed to cover and " +
+      "did not.",
   );
 });
 

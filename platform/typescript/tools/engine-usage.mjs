@@ -24,19 +24,25 @@
 // this package's own TypeScript are rejected before anything is emitted. It
 // resolves four forms:
 //
-//   obj.member            property access
-//   obj["member"]         element access with a literal or finite-union key
-//   const { member } = o  binding patterns, including nested and parameters
-//   ({ member } = o)      destructuring assignment
+//   obj.member                 property access
+//   obj["member"]              element access, literal or finite-union key
+//   const { member } = o       binding patterns: nested, renamed, parameters,
+//   const { ["member"]: m } = o  and computed names that are literal
+//   ({ member } = o)           destructuring assignment, including "quoted"
+//                              and [computed] names
 //
-// and well-known symbol members (`Math[Symbol.toStringTag]`) in the element
-// access form.
+// and well-known symbol members (`Math[Symbol.toStringTag]`, and
+// `const { [Symbol.iterator]: it } = o`).
 //
 // WHAT IT DOES NOT PROVE -- the honest boundary, stated so nobody reads the
 // green tick as more than it is:
 //
 //   - Dynamic access. `obj[key]` where `key` is `string` names no member the
-//     compiler can resolve, so nothing is checked.
+//     compiler can resolve, so nothing is checked. A COMPUTED key that is a
+//     literal or a well-known symbol is resolved; a variable one is not.
+//   - Array-pattern and `for...of` destructuring positions in an ASSIGNMENT
+//     pattern with a non-shorthand key. The binding-pattern forms are covered;
+//     `([{ "map": m }] = xs)` is not.
 //   - Structural erasure. `function f<T extends { map(...): U }>(x: T)` sees a
 //     structural constraint, not `Float32Array`; the call site that supplies
 //     the typed array IS caught, but a cast or `any` in between is not.
@@ -141,7 +147,6 @@ function elementAccessProperties(node, checker) {
   const argument = checker.getTypeAtLocation(node.argumentExpression);
   const candidates = argument.isUnion() ? argument.types : [argument];
 
-  const properties = checker.getPropertiesOfType(receiver);
   const found = [];
   for (const candidate of candidates) {
     let escaped;
@@ -152,10 +157,36 @@ function elementAccessProperties(node, checker) {
     } else {
       continue;
     }
-    const property = properties.find((p) => String(p.escapedName) === escaped);
+    const property = propertyByEscapedName(receiver, escaped, checker);
     if (property !== undefined) found.push(property);
   }
   return found;
+}
+
+/**
+ * The escaped property name a destructuring key refers to, if it is knowable.
+ *
+ * `{ map }`, `{ map: renamed }`, `{ "map": renamed }` and
+ * `{ ["map"]: renamed }` all read the same property, and so does
+ * `{ [Symbol.iterator]: it }`. A computed name that is not a literal -- a
+ * variable, a template with a hole -- names nothing resolvable and is part of
+ * the dynamic-access boundary.
+ */
+function destructuringKey(name, checker) {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return name.text;
+  if (!ts.isComputedPropertyName(name)) return undefined;
+  const type = checker.getTypeAtLocation(name.expression);
+  if (type.isStringLiteral()) return type.value;
+  if (type.flags & ts.TypeFlags.UniqueESSymbol) return String(type.escapedName);
+  return undefined;
+}
+
+/** Find a property on a type by its ESCAPED name, symbols included. */
+function propertyByEscapedName(type, escaped, checker) {
+  return checker
+    .getPropertiesOfType(type)
+    .find((p) => String(p.escapedName) === escaped);
 }
 
 /**
@@ -167,10 +198,75 @@ function elementAccessProperties(node, checker) {
  */
 function bindingElementProperty(node, checker) {
   if (!ts.isObjectBindingPattern(node.parent)) return undefined;
-  const name = node.propertyName ?? node.name;
-  if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) return undefined;
+  const escaped = destructuringKey(node.propertyName ?? node.name, checker);
+  if (escaped === undefined) return undefined;
   const source = checker.getTypeAtLocation(node.parent);
-  return checker.getPropertyOfType(source, name.text);
+  return propertyByEscapedName(source, escaped, checker);
+}
+
+/**
+ * The type being destructured by the pattern this member belongs to.
+ *
+ * Neither the literal's own type nor its contextual type is the answer -- in
+ * `({ "map": m } = arr)` the literal types as `{ map: unknown }`, and looking
+ * a property up on THAT finds a project declaration rather than the builtin.
+ * So walk out to the `=`, take the type of its right-hand side, and descend
+ * back down the keys collected on the way out.
+ */
+function destructuringSourceType(member, checker) {
+  const keys = [];
+  let node = member.parent; // the ObjectLiteralExpression
+  for (;;) {
+    const parent = node.parent;
+    if (parent === undefined) return undefined;
+    if (ts.isParenthesizedExpression(parent)) {
+      node = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      parent.left === node
+    ) {
+      let type = checker.getTypeAtLocation(parent.right);
+      for (const key of keys.reverse()) {
+        const property = propertyByEscapedName(type, key, checker);
+        if (property === undefined) return undefined;
+        type = checker.getTypeOfSymbolAtLocation(property, parent.right);
+      }
+      return type;
+    }
+    if (
+      ts.isPropertyAssignment(parent) &&
+      ts.isObjectLiteralExpression(parent.parent)
+    ) {
+      const key = destructuringKey(parent.name, checker);
+      if (key === undefined) return undefined;
+      keys.push(key);
+      node = parent.parent;
+      continue;
+    }
+    // An array pattern position, a `for...of` binding, a default: the source
+    // is not reachable this way, and guessing would be worse than declining.
+    return undefined;
+  }
+}
+
+/**
+ * The property a destructuring-assignment member reads.
+ *
+ * `getPropertySymbolOfDestructuringAssignment` answers for a plain shorthand
+ * and for `{ map: renamed }`, and returns undefined for a string-literal or
+ * computed key -- so those are resolved against the source type instead.
+ */
+function destructuringAssignmentProperty(node, checker) {
+  const direct = checker.getPropertySymbolOfDestructuringAssignment(node.name);
+  if (direct !== undefined) return direct;
+  const escaped = destructuringKey(node.name, checker);
+  if (escaped === undefined) return undefined;
+  const source = destructuringSourceType(node, checker);
+  if (source === undefined) return undefined;
+  return propertyByEscapedName(source, escaped, checker);
 }
 
 /**
@@ -230,10 +326,47 @@ function loadProgram(tsconfigName) {
   if (parsed.fileNames.length === 0) {
     throw new Error(`${tsconfigName}: matched no files`);
   }
-  return ts.createProgram({
+  const program = ts.createProgram({
     rootNames: parsed.fileNames,
     options: { ...parsed.options, noEmit: true },
   });
+
+  // FAIL CLOSED. This program is built by the `typescript` package, and the
+  // build type-checks with tsgo -- two compilers over the same sources. If the
+  // older one cannot understand the program (a syntax it does not have, an
+  // option it does not know, a type error only it sees), every symbol
+  // resolution below is guesswork and a clean result means nothing. It is the
+  // signal that the two have drifted, so it stops the build rather than
+  // reporting no findings.
+  const diagnostics = [
+    ...program.getConfigFileParsingDiagnostics(),
+    ...program.getOptionsDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(),
+    ...program.getSemanticDiagnostics(),
+  ];
+  if (diagnostics.length > 0) {
+    throw new Error(
+      `${tsconfigName}: TypeScript ${ts.version} reports ${diagnostics.length} ` +
+        "diagnostic(s) for this program, so the engine analysis below cannot " +
+        "be trusted. The build type-checks with tsgo and this check runs on " +
+        "the typescript package; a disagreement between them is the thing to " +
+        "fix, not to route around.\n" +
+        diagnostics
+          .slice(0, 10)
+          .map((d) => {
+            const where =
+              d.file && d.start !== undefined
+                ? `${relative(projectRoot, d.file.fileName)}:${
+                    d.file.getLineAndCharacterOfPosition(d.start).line + 1
+                  }  `
+                : "";
+            return `  ${where}${ts.flattenDiagnosticMessageText(d.messageText, " ")}`;
+          })
+          .join("\n"),
+    );
+  }
+  return program;
 }
 
 /**
@@ -307,13 +440,9 @@ export function checkEngineUsage(tsconfigName, engineSurface) {
         ts.isShorthandPropertyAssignment(node) ||
         ts.isPropertyAssignment(node)
       ) {
-        // `({ map } = arr)` and `({ map: renamed } = arr)`.
+        // `({ map } = arr)`, `({ map: renamed } = arr)`, `({ "map": r } = arr)`.
         if (isDestructuringTarget(node)) {
-          consider(
-            node,
-            checker.getPropertySymbolOfDestructuringAssignment(node.name),
-            undefined,
-          );
+          consider(node, destructuringAssignmentProperty(node, checker), undefined);
         }
       } else if (ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node.parent)) {
         // A bare global: `Float32Array`, `Proxy`. Skipped when it is the
@@ -344,6 +473,99 @@ export function formatFindings(tsconfigName, engine, findings, probedOn) {
         `and throws at runtime.`,
     )
     .join("\n");
+}
+
+/**
+ * Classes that extend a builtin constructor.
+ *
+ * WHY THIS IS TYPE-AWARE AND NOT A LINT SELECTOR. It was a lint selector, and
+ * a syntactic one has both escapes and false positives: an alias
+ * (`const E = Error; class X extends E`) or `globalThis.Error` walks past it,
+ * while a project's own class named `Map` is caught for no reason. Resolving
+ * the heritage expression through the checker and asking whether it lands on a
+ * lib declaration answers the actual question.
+ *
+ * Babel lowers `class X extends Map` through `_wrapNativeSuper` and
+ * `_construct`, and it was MEASURED to fail on both engines -- differently for
+ * each. `new (class extends Error {})("x")` constructs and satisfies
+ * `instanceof Error`, but not `instanceof` its own class; `new (class extends
+ * Map {})()` throws outright. The old rationale ("Reflect is absent") does not
+ * survive contact with the emitted helper, which falls back to `Function#bind`
+ * and `Object.setPrototypeOf` -- both present. See `emit:subclass-error` and
+ * `emit:subclass-map` in the surface, and `tools/emit-corpus.ts` for what they
+ * run.
+ */
+function nativeSuperclassName(expression, checker, libFiles) {
+  const declaredInLib = (symbol) =>
+    (symbol?.declarations ?? []).some((d) => libFiles.has(d.getSourceFile()));
+
+  // The identifier itself, following an import alias.
+  let symbol = checker.getSymbolAtLocation(expression);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
+    symbol = checker.getAliasedSymbol(symbol);
+  }
+  if (declaredInLib(symbol)) return symbol.name;
+
+  // ...and failing that, what it EVALUATES to. `const Aliased = Error` and
+  // `globalThis.Error` both leave the identifier declared in project code
+  // while the value is still the native, which is what actually matters.
+  const type = checker.getTypeAtLocation(expression);
+  const typeSymbol = type.getSymbol();
+  if (declaredInLib(typeSymbol)) {
+    return typeSymbol.name.endsWith("Constructor")
+      ? typeSymbol.name.slice(0, -"Constructor".length)
+      : typeSymbol.name;
+  }
+  return undefined;
+}
+
+export function findNativeSubclasses(tsconfigName) {
+  const program = loadProgram(tsconfigName);
+  const checker = program.getTypeChecker();
+  const libFiles = new Set(
+    program.getSourceFiles().filter((f) => program.isSourceFileDefaultLibrary(f)),
+  );
+  if (libFiles.size === 0) {
+    throw new Error(
+      `${tsconfigName}: no default-library files loaded; refusing to report ` +
+        "a clean result.",
+    );
+  }
+
+  const findings = [];
+  for (const sourceFile of program.getSourceFiles()) {
+    if (sourceFile.isDeclarationFile) continue;
+
+    const visit = (node) => {
+      if (
+        (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+        node.heritageClauses !== undefined
+      ) {
+        for (const clause of node.heritageClauses) {
+          if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+          for (const type of clause.types) {
+            const native = nativeSuperclassName(
+              type.expression,
+              checker,
+              libFiles,
+            );
+            if (native === undefined) continue;
+            const { line, character } =
+              sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+            findings.push({
+              file: relative(projectRoot, sourceFile.fileName),
+              line: line + 1,
+              column: character + 1,
+              native,
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sourceFile, visit);
+  }
+  return findings;
 }
 
 /**
@@ -385,4 +607,24 @@ export function assertNoAbsentBuiltinUses() {
     }
   }
   if (messages.length > 0) throw new Error(messages.join("\n\n"));
+}
+
+/** Throw if any runtime program subclasses a builtin. */
+export function assertNoNativeSubclasses() {
+  const messages = [];
+  for (const { tsconfig } of RUNTIME_PROGRAMS) {
+    for (const f of findNativeSubclasses(tsconfig)) {
+      messages.push(
+        `  ${f.file}:${f.line}:${f.column}  extends \`${f.native}\`. Babel ` +
+          "lowers a native superclass through `_wrapNativeSuper`, which was\n" +
+          "    measured to fail on both engines: an `Error` subclass loses its " +
+          "own `instanceof`,\n    and a `Map` subclass does not construct at " +
+          "all. Compose instead; for faults use\n    the tagged objects in " +
+          "framework/errors.ts.",
+      );
+    }
+  }
+  if (messages.length > 0) {
+    throw new Error("a runtime program subclasses a builtin:\n" + messages.join("\n"));
+  }
 }

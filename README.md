@@ -31,7 +31,7 @@ step, no bundler, and **no npm dependencies at all**.
 | ------- | ---- |
 | `fo up` | Bring the stack up. Idempotent — safe to re-run after a sleep or a failed pull. Exits non-zero if the stack is not ready when it returns; `--timeout 0` waits with no deadline. |
 | `fo down` | Remove the environment. `--destroy` also deletes the cluster. |
-| `fo status` | Pod readiness. Exits non-zero if anything is unready, so it works as a gate. |
+| `fo status` | Pod readiness, plus workloads that produced no pod at all. Exits non-zero if anything is unready or missing, so it works as a gate. |
 | `fo info` | URLs **and passwords**. `--json` for scripting. |
 | `fo logs [COMPONENT]` | Live multi-pod tail. Extra args pass through to `stern`. |
 | `fo logs search 'LOGSQL'` | Indexed search over history. Needs the log console. |
@@ -197,19 +197,23 @@ no `Proxy`, no `Reflect`, no `Array#flat` — so runtime-impossible code fails t
 type-check. And you never subclass a native — `Error`, `Map`, `Array`, any of
 them: `Reflect` is absent, which makes Babel's `_wrapNativeSuper` break
 `instanceof` silently. Use the tagged faults (`badRequest`, `notFound`, …)
-instead, and compose rather than extend. `async`, `await` and generators are
-banned too: an endpoint's response body is the script's completion value and an
+instead, and compose rather than extend — that is measured, not deduced: an
+`Error` subclass constructs but loses its own `instanceof`, and a `Map`
+subclass does not construct at all. `async`, `await` and generators are banned
+too: an endpoint's response body is the script's completion value and an
 AM node's outcome is read when `main` returns, so an unawaited Promise is all
-the host would ever see — and Rhino has no event loop here to settle it. Lint
-rules reject all of it, with the native list derived from the pinned `lib`
-rather than written out.
+the host would ever see — and Rhino has no event loop here to settle it. `fo build` rejects a native superclass by resolving it through the
+compiler (so an alias or `globalThis.Error` does not slip past, and your own
+class called `Map` is not caught by mistake); lint rejects the rest. The
+generator ban is a support boundary rather than a measured failure — the
+helpers are simply not in the probed corpus.
 
 That `lib` is not guesswork, and the proof is exhaustive rather than
 representative. `tools/engine-coverage.mjs` reads the lib files the tsconfigs
 name and enumerates **every** declaration that carries a runtime value — 728 of
 them — and `fo doctor --engines` probes all 728 on both engines, plus 13
 behavioural cases and 24 deliberate out-of-pin checks (`Proxy`, `Object.hasOwn`,
-Rhino's `java`/`Packages`): **765 probes each**. A test fails if the pin
+Rhino's `java`/`Packages`): **767 probes each**. A test fails if the pin
 promises something the probe never checked, which is what stops the measurement
 quietly describing a subset of the lib. Both compilers in this package are
 covered — `fo build` type-checks with `tsgo`, this analysis uses the
@@ -223,8 +227,8 @@ typed arrays (`Float32Array#map` and its siblings — Rhino ships only `get`,
 `Date#[Symbol.toPrimitive]` and a dozen more. None of it can be removed from
 the type system: `lib.es5` is monolithic, and declaration merging can add a
 member but never subtract one. So the line is held at the **use site** instead
-— `fo build` resolves every builtin reference in both programs through the
-compiler, before it emits anything, and fails if one is absent.
+— `fo build` resolves the builtin references it can, in both programs, through
+the compiler, before it emits anything, and fails if one is absent.
 `new Float32Array(8).map(f)` is a build failure, not a `TypeError` in the
 middle of somebody's login. Nothing is polyfilled (`useBuiltIns: false`), so
 there is no third option.
@@ -245,7 +249,7 @@ real helpers — `_toConsumableArray`, `_objectSpread`, `_createForOfIteratorHel
 
 The data is in `framework/engine-surface.json`, what it covers is frozen in
 `framework/engine-coverage.json` (a digest per lib file, for both compilers, so
-a bump to either forces a re-measure), and the original spike that started it
+a bump to either fails `fo build` until the engines are re-probed), and the original spike that started it
 is in [spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md). `fo doctor --engines`
 re-takes the measurement and exits non-zero if the engine has moved — worth
 running after a ForgeOps upgrade, which is the one thing that can invalidate
@@ -255,10 +259,11 @@ back.
 PingAM scripts are a **separate TypeScript program** (`tsconfig.am.json`),
 because AM and IDM declare colliding globals — both have a `logger`, and they
 are not the same shape. They share a `lib`, and at 97 probes they looked
-identical; at 765 they differ in two places (`Math` and `JSON` carry
-`Symbol.toStringTag` on IDM and not on AM). Neither is reachable from anything
-worth writing, and the shared lib stays sound because each program is checked
-against its own engine — not because the engines are the same object.
+identical; at 767 they differ in two places (`Math` and `JSON` carry
+`Symbol.toStringTag` on IDM and not on AM). Neither is used by anything here —
+PingIDM code *could* legitimately use them, and PingAM code that tried would be
+rejected — and the shared lib stays sound because each program is checked
+against its own engine, not because the engines are the same object.
 
 ### Dependencies come from nix
 

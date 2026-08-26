@@ -34,13 +34,12 @@ export type AmOutcomes = readonly [string, ...string[]];
  * user, and AM reports nothing at deploy time -- so the typo has to be a
  * compile error or it is a production incident.
  *
- * The narrowing here is not absolute, and the gap is worth naming. TypeScript
- * compares METHOD parameters bivariantly even under `strictFunctionTypes`, so
- * an author who annotates the callback parameter as `{ goTo(v: string): void }`
- * gets the wide signature back -- and no variance trick on this interface
- * changes that, because the bivariance comes from the annotation's own method
- * declaration, not from ours. `tools/am-source-rules.mjs` closes it from the
- * other side: annotating `main`'s parameter is a build failure.
+ * Assignability alone does not hold this. TypeScript compares METHOD parameters
+ * bivariantly even under `strictFunctionTypes`, so an author who annotates the
+ * callback parameter as `{ goTo(v: string): void }` gets the wide signature
+ * back, and no variance trick on THIS interface refuses it -- the bivariance
+ * comes from the annotation's own declaration. `MainMustNotWiden` below closes
+ * it by inspecting the annotation instead of relying on assignability.
  */
 export interface AmAction<Outcome extends string> {
   goTo(outcome: Outcome): void;
@@ -68,7 +67,37 @@ export type OutcomesMustBeLiterals<Outcomes extends AmOutcomes> =
       }
     : unknown;
 
-export interface AmScriptSpec<Outcomes extends AmOutcomes> {
+type FirstParameter<F> =
+  F extends (value: infer A, ...rest: never[]) => unknown ? A : never;
+
+type GoToOutcome<A> = A extends { goTo(outcome: infer O): void } ? O : never;
+
+/** `any` absorbs everything, including a comparison meant to reject it. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/**
+ * What an ANNOTATED `main` parameter degrades to.
+ *
+ * Leaving `main`'s parameter to inference is the whole mechanism, and an
+ * explicit annotation replaces it. Assignability cannot refuse a wider one --
+ * `{ goTo(outcome: string): void }` is accepted because method parameters
+ * compare bivariantly, and that bivariance is a property of the ANNOTATION, so
+ * nothing done to `AmAction` reaches it.
+ *
+ * So `Main` is inferred separately and the outcome type the author's own
+ * annotation admits is read back out of it. Anything it accepts beyond the
+ * declared outcomes -- `string`, `any`, or one extra literal -- fails here. An
+ * exact or narrower annotation still passes, because restricting yourself to
+ * fewer exits is sound.
+ */
+export type MainMustNotWiden<Outcomes extends AmOutcomes, Main> =
+  IsAny<GoToOutcome<FirstParameter<Main>>> extends true
+    ? { readonly __mainAcceptsUndeclaredOutcome: never }
+    : Exclude<GoToOutcome<FirstParameter<Main>>, Outcomes[number]> extends never
+      ? unknown
+      : { readonly __mainAcceptsUndeclaredOutcome: never };
+
+export interface AmScriptSpec<Outcomes extends AmOutcomes, Main> {
   /** Display name in the AM console. Must match the source file name. */
   name: string;
   context: AmScriptContext;
@@ -79,7 +108,7 @@ export interface AmScriptSpec<Outcomes extends AmOutcomes> {
    * checked against.
    */
   outcomes: Outcomes;
-  main: (action: AmAction<Outcomes[number]>) => void;
+  main: Main & ((action: AmAction<Outcomes[number]>) => void);
 }
 
 /**
@@ -116,8 +145,10 @@ export interface AmScriptMain {
  * });
  * ```
  */
-export function defineAmScript<const Outcomes extends AmOutcomes>(
-  spec: AmScriptSpec<Outcomes> & OutcomesMustBeLiterals<Outcomes>,
+export function defineAmScript<const Outcomes extends AmOutcomes, const Main>(
+  spec: AmScriptSpec<Outcomes, Main> &
+    OutcomesMustBeLiterals<Outcomes> &
+    MainMustNotWiden<Outcomes, Main>,
 ): AmScriptMain {
   // `AmOutcomes` already rejects an empty literal, but the emitted JS has no
   // types and this is the check that would have caught it.
@@ -128,7 +159,7 @@ export function defineAmScript<const Outcomes extends AmOutcomes>(
     // The one place the raw global is reached for. `action` is declared with
     // no usable outcome precisely so that every other reference to it fails to
     // compile and authors go through the parameter instead.
-    (spec as AmScriptSpec<Outcomes>).main(
+    (spec as AmScriptSpec<Outcomes, Main>).main(
       action as AmAction<Outcomes[number]>,
     );
   } as { (): void; definition: AmScriptDefinition };

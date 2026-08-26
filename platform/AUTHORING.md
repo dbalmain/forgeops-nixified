@@ -179,8 +179,8 @@ and they are not the same shape. A file that imports from
 `framework/index.ts` will not compile here, and should not.
 
 They do share a `lib`, because they share an engine: both were probed on a
-running stack, 765 probes each, and differ in only two places neither program
-can reach. That sharing is sound because each program is checked against its
+running stack, 767 probes each, and differ in only two places nothing here
+uses. That sharing is sound because each program is checked against its
 own engine, not because the two engines are the same object. So
 `Object.entries`, `String#padStart` and `Promise#finally` are available in
 both; `Array#flat`, `Object.hasOwn`, `String#replaceAll`, `Proxy` and
@@ -193,8 +193,8 @@ PingAM's Rhino (232 from PingIDM's) — the typed arrays almost entirely
 (`Float32Array` has `get`, `set` and `subarray` and nothing else), plus
 `RegExp#flags`, `RegExp#sticky` and `Date#[Symbol.toPrimitive]`. They cannot be
 removed: `lib.es5` is one file, and declaration merging can add a member but
-never subtract one. So **`fo build` resolves every builtin reference in both
-programs and fails before it emits anything**, naming the file and line — the
+never subtract one. So **`fo build` resolves the builtin references it can, in
+both programs, and fails before it emits anything**, naming the file and line — the
 same step that runs the type-check, so the error arrives in your editor rather
 than from a later test run.
 

@@ -240,10 +240,23 @@ test("a DaemonSet nobody schedules is not a gap, and a suspended Job is not eith
   // means zero wanted, not a missing workload. A suspended Job is not trying.
   assert.deepEqual(
     gapsIn([
-      workload({ kind: "DaemonSet", metadata: { name: "fo-vector" }, status: { desiredNumberScheduled: 0, numberReady: 0 } }),
+      workload({ kind: "DaemonSet", metadata: { name: "some-addon" }, status: { desiredNumberScheduled: 0, numberReady: 0 } }),
       workload({ kind: "Job", metadata: { name: "paused" }, spec: { completions: 1, suspend: true }, status: {} }),
     ]),
     [],
+  );
+});
+
+test("...but a collector WE deployed that schedules nowhere is a gap", () => {
+  // Kubernetes is right in general and wrong for this one: `fo up` installs
+  // fo-vector and tells the developer the log console works. An eligibility
+  // regression leaves it collecting nothing, and "desired 0" would report that
+  // as healthy.
+  assert.deepEqual(
+    gapsIn([
+      workload({ kind: "DaemonSet", metadata: { name: "fo-vector" }, status: { desiredNumberScheduled: 0, numberReady: 0 } }),
+    ]),
+    [{ what: "DaemonSet/fo-vector", have: 0, want: 1 }],
   );
 });
 

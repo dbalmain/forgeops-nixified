@@ -96,23 +96,105 @@ export function _amTypingIsWired(risky: boolean): void {
   });
 
   // The other way back to a wide `goTo`: annotate the callback parameter
-  // instead of letting it be inferred. Written as a function-typed PROPERTY
-  // the comparison is contravariant and the compiler rejects it, which is what
-  // this locks in.
+  // instead of letting it be inferred.
   //
-  // Written as a METHOD -- `{ goTo(outcome: string): void }` -- it is accepted,
-  // because TypeScript compares method parameters bivariantly and the
-  // bivariance comes from the annotation's own declaration, so no variance
-  // trick on `AmAction` can refuse it. That case is not expressible here as a
-  // negative test; `tools/am-source-rules.mjs` catches it at the source and
-  // `tests/am-source-rules.test.mjs` holds the fixture.
+  // Assignability alone cannot refuse this. TypeScript compares METHOD
+  // parameters bivariantly, so `{ goTo(o: string): void }` is an accepted
+  // stand-in for `AmAction<"high" | "low">` and no variance annotation on
+  // `AmAction` changes that -- the bivariance belongs to the annotation.
+  // `MainMustNotWiden` reads the annotation's own outcome type back out
+  // instead, which is why both spellings are rejected below and the earlier
+  // attempt (making `goTo` a function-typed property) was not enough.
+  // Rejected by `MainMustNotWiden`, so the error lands on the ARGUMENT: plain
+  // assignability accepts this one, which is the whole problem.
+  // @ts-expect-error a wider `goTo` cannot stand in for the narrow one.
   defineAmScript({
-    name: "annotated-action",
+    name: "annotated-action-method",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    main: (action: { goTo(outcome: string): void }) => {
+      action.goTo("hihg");
+    },
+  });
+
+  defineAmScript({
+    name: "annotated-action-property",
     context: "SCRIPTED_DECISION_NODE",
     outcomes: ["high", "low"],
     // @ts-expect-error a wider `goTo` cannot stand in for the narrow one.
     main: (action: { goTo: (outcome: string) => void }) => {
       action.goTo("hihg");
+    },
+  });
+
+  defineAmScript({
+    name: "annotated-action-extra-literal",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    // The subtle one: not `string`, just one outcome too many. Nothing about
+    // the shape looks wrong, and `goTo("hihg")` inside it would be checked --
+    // against the wrong set. Plain assignability does catch this, so the error
+    // is on the property rather than on the argument.
+    // @ts-expect-error "hihg" is not a declared outcome.
+    main: (action: { goTo(outcome: "high" | "hihg"): void }) => {
+      action.goTo("hihg");
+    },
+  });
+
+  // `any` absorbs an ordinary comparison, so the widening test has to check
+  // for it specifically. Also rejected on the argument.
+  // @ts-expect-error `any` accepts every undeclared outcome.
+  defineAmScript({
+    name: "annotated-action-any",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    main: (action: { goTo(outcome: any): void }) => {
+      action.goTo("hihg");
+    },
+  });
+
+  // The escapes a SYNTACTIC rule would have had, and the reason this is done
+  // in the type system instead: an object method rather than an arrow, and a
+  // `main` defined elsewhere and passed by shorthand. Both are ordinary ways
+  // to write it, and both are checked here because the constraint travels with
+  // the type rather than with the shape of the call.
+  defineAmScript({
+    name: "object-method-main",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    main(action) {
+      action.goTo("low");
+    },
+  });
+
+  const detachedMain = (action: { goTo(outcome: string): void }): void => {
+    action.goTo("hihg");
+  };
+  // @ts-expect-error a `main` defined elsewhere is checked the same way.
+  defineAmScript({
+    name: "detached-main",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    main: detachedMain,
+  });
+
+  // ...and the positive control for all of it: an exact annotation, and a
+  // narrower one, are both legitimate and must still compile.
+  defineAmScript({
+    name: "exact-annotation",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    main: (action: { goTo(outcome: "high" | "low"): void }) => {
+      action.goTo("high");
+    },
+  });
+  defineAmScript({
+    name: "narrower-annotation",
+    context: "SCRIPTED_DECISION_NODE",
+    outcomes: ["high", "low"],
+    main: (action: { goTo(outcome: "high"): void }) => {
+      action.goTo("high");
     },
   });
 }

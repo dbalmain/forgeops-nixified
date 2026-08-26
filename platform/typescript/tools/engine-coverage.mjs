@@ -165,7 +165,6 @@ export function requiredKeys(libEntries, libDir = TSGO_LIB_DIR) {
   }
 
   const keys = new Set();
-  const constructors = new Set();
   for (const [name, type] of globalType) {
     keys.add(`g:${name}`);
 
@@ -175,7 +174,6 @@ export function requiredKeys(libEntries, libDir = TSGO_LIB_DIR) {
     // prototype members.
     const constructorInterface = `${name}Constructor`;
     if (type === constructorInterface) {
-      constructors.add(name);
       for (const member of interfaces.get(constructorInterface) ?? []) {
         if (!UNINTERESTING.has(member)) keys.add(`${name}.${member}`);
       }
@@ -199,33 +197,7 @@ export function requiredKeys(libEntries, libDir = TSGO_LIB_DIR) {
       !(name.endsWith("Constructor") && globalType.has(name.slice(0, -11))),
   );
 
-  return {
-    keys: [...keys].sort(),
-    constructors: [...constructors].sort(),
-    unclassified: unclassified.sort(),
-  };
-}
-
-/**
- * The globals that are CONSTRUCTORS: `declare var X: XConstructor`.
- *
- * Babel lowers `class Mine extends X` to `_wrapNativeSuper(X)`, which reaches
- * for `Reflect.construct`. `Reflect` is absent from this Rhino, so every one
- * of these is a superclass whose prototype chain silently does not survive the
- * downlevel -- `instanceof Mine` is false while `instanceof X` is true. That
- * was found for `Error` and banned for `Error`; it is a property of the
- * lowering, not of `Error`.
- *
- * Derived from the lib rather than listed, so a lib change cannot leave a new
- * native unbanned. Both compilers, because either one admitting it is enough.
- */
-export function constructorGlobals(libEntries) {
-  return [
-    ...new Set([
-      ...requiredKeys(libEntries, TSGO_LIB_DIR).constructors,
-      ...requiredKeys(libEntries, TS_LIB_DIR).constructors,
-    ]),
-  ].sort();
+  return { keys: [...keys].sort(), unclassified: unclassified.sort() };
 }
 
 /**
@@ -258,9 +230,6 @@ export function requiredKeysUnion(libEntries) {
   const tsc = requiredKeys(libEntries, TS_LIB_DIR);
   return {
     keys: [...new Set([...tsgo.keys, ...tsc.keys])].sort(),
-    constructors: [
-      ...new Set([...tsgo.constructors, ...tsc.constructors]),
-    ].sort(),
     unclassified: [
       ...new Set([...tsgo.unclassified, ...tsc.unclassified]),
     ].sort(),
@@ -273,6 +242,91 @@ export function typescriptVersion() {
 
 export function tsgoVersion() {
   return require("@typescript/native-preview/package.json").version;
+}
+
+/**
+ * Everything about the measurement that has to hold BEFORE anything is
+ * emitted.
+ *
+ * These four lived only in `tests/engine-lib.test.mjs`, which runs after the
+ * build -- and a direct `fo build` never runs it at all. That mattered
+ * concretely: after a compiler bump a newly declared builtin is `undefined` in
+ * the surface rather than recorded `false`, so the use-site check permits it
+ * and the build emits, and only a later test run says the measurement is
+ * stale. `fo build` calls this now, so the claim "a compiler bump fails the
+ * build" is true rather than aspirational.
+ */
+export function assertMeasurementCovers(surface, coverage) {
+  const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
+
+  const tsgo = requiredKeys(libs, TSGO_LIB_DIR);
+  const tsc = requiredKeys(libs, TS_LIB_DIR);
+
+  if (tsgo.unclassified.length > 0 || tsc.unclassified.length > 0) {
+    throw new Error(
+      "interfaces the coverage tool cannot classify as runtime-bearing or " +
+        "structural, so it does not know whether to require them: " +
+        [...new Set([...tsgo.unclassified, ...tsc.unclassified])].join(", "),
+    );
+  }
+
+  // The build enforces with tsgo's declarations and this analysis reads
+  // typescript's. They are different files; that they promise the same things
+  // is a fact with a shelf life.
+  const onlyTsgo = tsgo.keys.filter((k) => !tsc.keys.includes(k));
+  const onlyTsc = tsc.keys.filter((k) => !tsgo.keys.includes(k));
+  if (onlyTsgo.length > 0 || onlyTsc.length > 0) {
+    throw new Error(
+      "tsgo and typescript no longer declare the same builtins for the " +
+        "pinned lib, so the use-site check and the emission gate are no " +
+        "longer asking the same question.\n" +
+        `  only tsgo: ${onlyTsgo.join(", ") || "(none)"}\n` +
+        `  only typescript: ${onlyTsc.join(", ") || "(none)"}`,
+    );
+  }
+
+  const keys = [...new Set([...tsgo.keys, ...tsc.keys])].sort();
+  for (const engine of ["am", "idm"]) {
+    const unprobed = keys.filter((k) => !(k in surface[engine]));
+    if (unprobed.length > 0) {
+      throw new Error(
+        `${unprobed.length} builtin(s) the pinned lib declares were never ` +
+          `probed on ${engine}: ${unprobed.slice(0, 8).join(", ")}` +
+          (unprobed.length > 8 ? ", ..." : "") +
+          "\nRun `node tools/engine-coverage.mjs --seed`, then " +
+          "`fo doctor --engines --record` against a running stack.",
+      );
+    }
+  }
+
+  const stale = [];
+  if (coverage.typescript !== typescriptVersion()) {
+    stale.push(`typescript ${coverage.typescript} -> ${typescriptVersion()}`);
+  }
+  if (coverage.tsgo !== tsgoVersion()) {
+    stale.push(`tsgo ${coverage.tsgo} -> ${tsgoVersion()}`);
+  }
+  const digests = {
+    tsgo: libDigests(libs, TSGO_LIB_DIR),
+    typescript: libDigests(libs, TS_LIB_DIR),
+  };
+  for (const which of ["tsgo", "typescript"]) {
+    for (const [entry, digest] of Object.entries(digests[which])) {
+      if (coverage.lib?.[which]?.[entry] !== digest) {
+        stale.push(`${which} lib.${entry}`);
+      }
+    }
+  }
+  if (stale.length > 0) {
+    throw new Error(
+      "the engine surface was measured against different declaration files " +
+        `than the ones in use: ${stale.join(", ")}.\nRe-probe with ` +
+        "`fo doctor --engines --record` against a running stack, then " +
+        "`node tools/engine-coverage.mjs --manifest`. Do not refresh the " +
+        "manifest on its own - the point is that a compiler change cannot be " +
+        "waved through without a fresh measurement.",
+    );
+  }
 }
 
 /* --------------------------------------------------------------------- CLI */
