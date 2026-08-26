@@ -17,9 +17,22 @@
  * the thing doing the verifying cannot disagree about what to check: add a key
  * to the JSON and it gets probed, on both engines, automatically.
  *
- * Existence is tested with `typeof` on the holder, never by CALLING the thing
- * - one absent builtin would otherwise abort the whole probe at its first
- * miss and report everything after it as missing.
+ * Existence is tested with `in`, never by CALLING the thing - one absent
+ * builtin would otherwise abort the whole probe at its first miss and report
+ * everything after it as missing.
+ *
+ * WHY `in` AND NOT `typeof`. Reading a property invokes an accessor, and an
+ * accessor read off the PROTOTYPE throws: `typeof Map.prototype.size` answers
+ * `TypeError: Method "get size" called on incompatible object` on this engine,
+ * which the old probe caught and recorded as absent. `Map#size` is very much
+ * present. Any getter-backed member was measured wrong the same way.
+ *
+ * WHY AN INSTANCE IS TRIED TOO. Some members the lib declares on an interface
+ * are own properties of an INSTANCE rather than of the prototype - `Error#stack`
+ * is the one that matters here, and `"stack" in Error.prototype` is false on
+ * an engine where `new Error().stack` is a string. Constructing one sample per
+ * holder, inside a try, is what makes the answer about the engine rather than
+ * about where the engine chose to hang the property.
  */
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -30,15 +43,16 @@ export type ProbeSpec =
   | { kind: "engine"; key: string; name: string }
   | { kind: "static"; key: string; holder: string; member: string }
   | { kind: "proto"; key: string; holder: string; member: string }
-  | { kind: "protoSymbol"; key: string; holder: string; symbol: string };
+  | { kind: "protoSymbol"; key: string; holder: string; symbol: string }
+  | { kind: "staticSymbol"; key: string; holder: string; symbol: string };
 
 /**
  * Decompose a surface key.
  *
  * Returns null for keys this cannot generate code for - the `emit:*`
- * behavioural checks, which assert that downlevelled output actually RUNS and
- * so have to be written out by hand, and the `g:<global-reachable>` sentinel,
- * which the preamble answers.
+ * behavioural keys, which are answered by the generated corpus rather than by
+ * a name lookup, and the `g:<global-reachable>` sentinel, which the preamble
+ * answers.
  */
 export function parseKey(key: string): ProbeSpec | null {
   if (key === "g:<global-reachable>") return null;
@@ -57,6 +71,28 @@ export function parseKey(key: string): ProbeSpec | null {
   // no object has, so the probe reports absent on an engine that has it.
   const sym = /^([A-Za-z_$][\w$]*)#\[Symbol\.([A-Za-z]+)\]$/.exec(key);
   if (sym) return { kind: "protoSymbol", key, holder: sym[1]!, symbol: sym[2]! };
+
+  // `Array.[Symbol.species]` - the same thing on the constructor rather than
+  // the prototype. `lib.es2015.symbol.wellknown.d.ts` declares a dozen of
+  // these, so leaving them ungeneratable left a hole in the coverage the
+  // audit is supposed to close.
+  const staticSym = /^([A-Za-z_$][\w$]*)\.\[Symbol\.([A-Za-z]+)\]$/.exec(key);
+  if (staticSym) {
+    return {
+      kind: "staticSymbol",
+      key,
+      holder: staticSym[1]!,
+      symbol: staticSym[2]!,
+    };
+  }
+
+  // The legacy RegExp statics: `RegExp.$&`, `RegExp.$\``, `RegExp.$'`,
+  // `RegExp.$+`. Real properties with names no identifier rule admits, so
+  // they need their own case rather than being quietly skipped.
+  const legacy = /^RegExp\.(\$[&`'+])$/.exec(key);
+  if (legacy) {
+    return { kind: "static", key, holder: "RegExp", member: legacy[1]! };
+  }
 
   const hash = key.indexOf("#");
   if (hash > 0) {
@@ -82,46 +118,6 @@ export function unprobeableKeys(keys: string[]): string[] {
     k !== "g:<global-reachable>");
 }
 
-/**
- * The behavioural checks, hand-written because they assert that code RUNS
- * rather than that a name exists. These mirror what Babel's output relies on.
- */
-const BEHAVIOUR = `
-  try {
-    var forOfSeen = 0;
-    for (var fv of [1, 2, 3]) { forOfSeen += fv; }
-    add("emit:for-of-array", forOfSeen === 6);
-  } catch (e) { add("emit:for-of-array", false); }
-
-  try {
-    var spread = [].concat([1, 2], [3, 4]);
-    add("emit:spread-array", spread.length === 4);
-  } catch (e) { add("emit:spread-array", false); }
-
-  try {
-    var pair = [10, 20];
-    var d0 = pair[0], d1 = pair[1];
-    add("emit:index-access", d0 === 10 && d1 === 20);
-  } catch (e) { add("emit:index-access", false); }
-
-  try {
-    var st = new Set(); st.add("a"); st.add("b");
-    add("emit:array-from-set", Array.from(st).length === 2);
-  } catch (e) { add("emit:array-from-set", false); }
-
-  try {
-    var mp = new Map(); mp.set("k", 1);
-    var mkeys = [];
-    mp.forEach(function (v, k) { mkeys.push(k); });
-    add("emit:map-forEach", mkeys.length === 1);
-  } catch (e) { add("emit:map-forEach", false); }
-
-  try {
-    var who = "world";
-    add("emit:template-ok", ("hello " + who) === "hello world");
-  } catch (e) { add("emit:template-ok", false); }
-`;
-
 function line(spec: ProbeSpec): string {
   const k = JSON.stringify(spec.key);
   switch (spec.kind) {
@@ -136,9 +132,11 @@ function line(spec: ProbeSpec): string {
     case "static":
       return `  add(${k}, typeof ${spec.holder} !== "undefined" && hasOn(${spec.holder}, ${JSON.stringify(spec.member)}));`;
     case "proto":
-      return `  add(${k}, typeof ${spec.holder} !== "undefined" && hasOn(${spec.holder}.prototype, ${JSON.stringify(spec.member)}));`;
+      return `  add(${k}, hasProto(typeof ${spec.holder} === "undefined" ? undefined : ${spec.holder}, ${JSON.stringify(spec.holder)}, ${JSON.stringify(spec.member)}));`;
     case "protoSymbol":
-      return `  add(${k}, typeof Symbol !== "undefined" && typeof ${spec.holder} !== "undefined" && typeof ${spec.holder}.prototype[Symbol.${spec.symbol}] !== "undefined");`;
+      return `  add(${k}, typeof Symbol !== "undefined" && Symbol.${spec.symbol} !== undefined && hasProto(typeof ${spec.holder} === "undefined" ? undefined : ${spec.holder}, ${JSON.stringify(spec.holder)}, Symbol.${spec.symbol}));`;
+    case "staticSymbol":
+      return `  add(${k}, typeof Symbol !== "undefined" && typeof ${spec.holder} !== "undefined" && typeof ${spec.holder}[Symbol.${spec.symbol}] !== "undefined");`;
   }
 }
 
@@ -150,7 +148,7 @@ function line(spec: ProbeSpec): string {
  * exception is inside the behavioural block, where newer syntax IS the thing
  * under test and every case is wrapped in its own try.
  */
-export function probeSource(keys: string[]): string {
+export function probeSource(keys: string[], emitProbe: string): string {
   const specs = keys.map(parseKey).filter((s): s is ProbeSpec => s !== null);
   // Sorted so the emitted source is stable for a given surface - a diff of
   // two probe runs should show engine drift, not key ordering.
@@ -161,13 +159,46 @@ export function probeSource(keys: string[]): string {
     "  function add(k, present) { out.push((present ? \"+\" : \"-\") + k); }",
     "  function hasOn(holder, name) {",
     "    if (holder === null || holder === undefined) return false;",
+    "    try { if (name in Object(holder)) return true; } catch (e) {}",
     "    try { return typeof holder[name] !== \"undefined\"; } catch (e) { return false; }",
+    "  }",
+    // One sample per constructor, built with whatever argument it accepts.
+    // Everything is wrapped: a constructor that refuses every shape simply
+    // yields no sample, and the prototype answer stands on its own.
+    "  var samples = {};",
+    "  function sample(holder, name) {",
+    "    if (!(name in samples)) {",
+    "      samples[name] = undefined;",
+    "      var tries = [",
+    "        function () { return new holder(); },",
+    "        function () { return new holder(0); },",
+    "        function () { return new holder(function () {}); },",
+    "        function () { return new holder(new ArrayBuffer(8)); }",
+    "      ];",
+    "      for (var i = 0; i < tries.length; i++) {",
+    "        try { samples[name] = tries[i](); break; } catch (e) {}",
+    "      }",
+    "    }",
+    "    return samples[name];",
+    "  }",
+    "  function hasProto(holder, name, member) {",
+    "    if (typeof holder === \"undefined\") return false;",
+    "    if (hasOn(holder.prototype, member)) return true;",
+    "    return hasOn(sample(holder, name), member);",
     "  }",
     "  var GLOBAL;",
     "  try { GLOBAL = (function () { return this; })(); } catch (e) { GLOBAL = undefined; }",
     "  add(\"g:<global-reachable>\", GLOBAL !== null && GLOBAL !== undefined);",
     ...specs.map(line),
-    BEHAVIOUR,
+    // The behavioural half, spliced in verbatim from
+    // platform/typescript/framework/engine-emit-probe.js - the REAL output of
+    // the real esbuild+Babel pipeline, not a hand-written impression of it.
+    // Wrapped so a wholesale failure leaves the `emit:*` keys unanswered
+    // (which `diffSurface` reports as missing) rather than silently absent.
+    "  try {",
+    "    var emitted = " + emitProbe.trimEnd() + ";",
+    "    for (var ei = 0; ei < emitted.length; ei++) out.push(emitted[ei]);",
+    "  } catch (e) { out.push(\"emit-probe-threw:\" + e); }",
     "  return out;",
     "})()",
   ].join("\n");
@@ -178,7 +209,8 @@ export type Surface = Record<string, boolean>;
 // A probe key, anchored. AM reports through its JSON log, so a token can pick
 // up the closing quote and the rest of the record; anything that is not
 // exactly a key is dropped rather than becoming one.
-const KEY = /^[+-]([A-Za-z_$][\w$]*[#.][\w$]+|[A-Za-z_$][\w$]*#\[Symbol\.[A-Za-z]+\]|[ge]:[A-Za-z_$][\w$]*|g:<global-reachable>|emit:[A-Za-z-]+)$/;
+const KEY =
+  /^[+-]([A-Za-z_$][\w$]*[#.][\w$]+|[A-Za-z_$][\w$]*[#.]\[Symbol\.[A-Za-z]+\]|RegExp\.\$[&`'+]|[ge]:[A-Za-z_$][\w$]*|g:<global-reachable>|emit:[A-Za-z-]+)$/;
 
 /** Turn `["+Array#flat", "-Object.hasOwn"]` into a surface map. */
 export function parseProbeOutput(lines: readonly string[]): Surface {

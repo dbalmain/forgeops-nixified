@@ -179,12 +179,23 @@ and they are not the same shape. A file that imports from
 `framework/index.ts` will not compile here, and should not.
 
 They do share a `lib`, because they share an engine: both were probed on a
-running stack and turned out to be the same Rhino build, agreeing on all 95
-builtins checked ([spike/ENGINE-SURFACE.md](../spike/ENGINE-SURFACE.md)). So
+running stack, 751 probes each, and differ in only two places neither program
+can reach ([spike/ENGINE-SURFACE.md](../spike/ENGINE-SURFACE.md)). So
 `Object.entries`, `String#padStart` and `Promise#finally` are available in
 both; `Array#flat`, `Object.hasOwn`, `String#replaceAll`, `Proxy` and
 `Reflect` are in neither, and will not compile. Nothing is polyfilled, so that
 list is the truth rather than a house style.
+
+A second class of thing compiles and then throws, and it needs a different
+answer. 234 of the 714 declarations the pinned `lib` carries are absent from
+Rhino — the typed arrays almost entirely (`Float32Array` has `get`, `set` and
+`subarray` and nothing else), plus `RegExp#flags`, `RegExp#sticky` and
+`Date#[Symbol.toPrimitive]`. They cannot be removed: `lib.es5` is one file and
+TypeScript has no way to un-declare a member. So `fo check` resolves every
+property access in both programs and fails the build on one of these, naming
+the file and line. You will not get a `TypeError` in a journey for it, but the
+error arrives from the test run rather than from the type-checker in your
+editor.
 
 ```ts
 import { defineAmScript } from "../../framework/am.ts";

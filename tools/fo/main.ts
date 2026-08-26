@@ -40,6 +40,7 @@ ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}
   fo shell COMPONENT [-- CMD...]           exec into a component's pod
   fo doctor [--env NAME]                   preflight checks
   fo doctor --engines [--env NAME]         re-probe the script engines (needs a running stack)
+  fo doctor --engines --record             ...and write what they answered into engine-surface.json
   fo token [--env NAME]                    OAuth2 access token for IDM REST
 
 ${bold("Inner loop")}
@@ -77,6 +78,7 @@ type Flags = {
   destroy: boolean;
   noTilt: boolean;
   engines: boolean;
+  record: boolean;
   force: boolean;
   check: boolean;
   noUpgrade: boolean;
@@ -92,6 +94,7 @@ function parse(argv: string[]): Flags {
     destroy: false,
     noTilt: false,
     engines: false,
+    record: false,
     force: false,
     check: false,
     noUpgrade: false,
@@ -118,6 +121,8 @@ function parse(argv: string[]): Flags {
       f.noTilt = true;
     } else if (a === "--engines") {
       f.engines = true;
+    } else if (a === "--record") {
+      f.record = true;
     } else if (a === "--force") {
       f.force = true;
     } else if (a === "--check") {
@@ -168,7 +173,9 @@ async function main(): Promise<void> {
       // --engines is a separate, slower check against a RUNNING stack: it
       // re-measures what the script engines provide. The default doctor is a
       // preflight and must stay runnable with nothing deployed.
-      const okAll = flags.engines ? await doctorEngines(cfg) : await doctor(cfg);
+      const okAll = flags.engines
+        ? await doctorEngines(cfg, flags.record)
+        : await doctor(cfg);
       if (!okAll) process.exitCode = 1;
       break;
     }

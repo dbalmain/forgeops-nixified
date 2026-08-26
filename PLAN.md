@@ -1087,9 +1087,14 @@ produces code that type-checks, lints, builds, deploys and throws in the
 middle of somebody's login.
 
 Two probes — a PingAM scripted decision node and a PingIDM custom endpoint —
-reported which builtins actually exist. Result: **both are the same Rhino
-build and agreed on all 95 shared probes**, which is what makes one shared
-`lib` sound.
+reported which builtins actually exist. Result at the time: **both looked like
+the same Rhino build and agreed on all 95 shared probes**, which is what made
+one shared `lib` look sound.
+
+> Superseded by Phase 6.2. Ninety-five probes was a sample, not a census, and
+> both halves of that sentence turned out to be weaker than they read: the pin
+> promises 714 runtime-bearing declarations, 234 of them are absent, and the
+> two engines are not identical. See below.
 
 - **The pinned `lib` was correct.** Every entry already there is genuinely
   present. No change needed — the outcome worth having verified rather than
@@ -1124,6 +1129,11 @@ key to the JSON and both engines probe it on the next run. Only the six
 downlevelled output *runs* rather than that a name exists. The spike probes
 are deleted; git history has them.
 
+> Both of those sentences were the weak point Phase 6.2 had to fix: generating
+> the probes *from the JSON* means nothing outside the JSON can ever be
+> discovered, and the hand-written `emit:*` checks tested an impression of
+> Babel's output rather than Babel's output.
+
 **Delivery, per engine:**
 
 - **PingIDM** — `POST /openidm/script?_action=eval`. Inline, no deploy,
@@ -1151,6 +1161,68 @@ that is absent, on each engine, and one claimed absent that is present — were
 each reported with the direction of the change, exit 1. Twelve unit tests
 cover the pure logic, including the two bugs above and the
 `String(Symbol.iterator)` trap from Phase 6; reverting either fix fails them.
+
+### Phase 6.2 — the proof was circular — **DONE**
+
+Codex read Phase 6 and found the hole: the probe list is generated *from*
+`engine-surface.json`, and the test only rejected a lib entry declaring
+something recorded **absent**. So a builtin nobody thought to probe could
+never be discovered, never be reported, and was silently assumed present. The
+`lib` pin therefore described an engine we had measured 13% of.
+
+What replaced it:
+
+- **The required set is derived from the other side.**
+  `tools/engine-coverage.mjs` walks the TypeScript lib files the tsconfigs
+  name and enumerates every declaration that carries a runtime value: **714**,
+  against 97 recorded. A test fails on any that were never probed, so the
+  measurement can no longer be a subset of the lib by omission.
+- **234 of the 714 are absent.** Nearly all of the typed arrays — Rhino's
+  `Float32Array.prototype` has `get`, `set` and `subarray` and none of the
+  `%TypedArray%` suite — plus `RegExp#flags`, `RegExp#sticky`, `RegExp#unicode`,
+  `Date#[Symbol.toPrimitive]`, `Function#[Symbol.hasInstance]` and the
+  well-known-symbol statics.
+- **The old gate was unsatisfiable, not passing.** "No pinned lib entry may
+  declare a builtin the engine lacks" cannot hold for any real lib list:
+  `lib.es5` is monolithic, the typed arrays arrive with `Date` and `JSON`, and
+  TypeScript cannot un-declare an interface member. It only ever passed
+  because the measurement was too small to notice. It is replaced by a
+  **use-site** check that resolves every property access in both programs
+  through the compiler and fails the build on a use of an absent builtin.
+- **The engines are not identical.** At 97 probes they agreed; at 751 they
+  differ on `Math[Symbol.toStringTag]` and `JSON[Symbol.toStringTag]`, present
+  on IDM and absent on AM. The shared `lib` survives because each program is
+  now checked against **its own** engine.
+- **The behavioural checks are generated.** `tools/emit-corpus.ts` goes through
+  the real esbuild+Babel pipeline (extracted to `tools/pipeline.mjs` so the
+  build and the probe provably share it), and the committed output is what the
+  engines run. The old hand-written six mirrored an *assumption* about Babel —
+  the spread case was a literal `[].concat(...)` — and would have stayed green
+  through a preset-env change that started emitting `_toConsumableArray`.
+- **The measurement is frozen to what it covered.**
+  `framework/engine-coverage.json` records the TypeScript version and a digest
+  per lib file; a bump fails the build with "re-probe" rather than silently
+  widening the pin.
+
+**Two measurement bugs found by expanding the coverage**, both of which would
+have gone into the record as fact:
+
+- `typeof Map.prototype.size` **throws** on this engine (`Method "get size"
+  called on incompatible object`), and the probe caught the throw and recorded
+  `Map#size` as absent. Every getter-backed member was measured the same way.
+  Existence is now tested with `in`, which does not invoke accessors.
+- `Error#stack` is an own property of an instance, not of the prototype, so a
+  prototype-only probe called it absent on an engine where `new Error().stack`
+  is a string. The probe now also tries one constructed sample per holder.
+- And the use-site check itself was born blind: it matched lib files by path,
+  but `node_modules` is a symlink into the nix store, so it compared
+  `<project>/node_modules/...` against `/nix/store/...`, matched nothing, and
+  passed a file using `Float32Array#map`. It asks the compiler which files are
+  default-library files now, refuses to report a clean result if it loaded
+  none, and a committed fixture proves it can still fail.
+
+`fo doctor --engines --record` writes a fresh measurement back, and refuses to
+write a partial one.
 
 ### Bug found on the way: `fo amster` failed on a first install
 

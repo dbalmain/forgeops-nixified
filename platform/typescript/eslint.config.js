@@ -37,6 +37,9 @@ export default tseslint.config(
       "openapi/**",
       "node_modules/**",
       "src/generated/**",
+      // Babel's ES5 output, committed on purpose so `fo doctor --engines` can
+      // run the pipeline's real emit. Linting generated helpers says nothing.
+      "framework/engine-emit-probe.js",
       ".aic-ts-manifest.json",
     ],
   },

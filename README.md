@@ -198,21 +198,48 @@ type-check. And you never subclass `Error`: `Reflect` is absent, which makes
 Babel's `_wrapNativeSuper` break `instanceof` silently. Use the tagged faults
 (`badRequest`, `notFound`, …) instead; a lint rule rejects the alternative.
 
-That `lib` is not guesswork. Both engines were probed on a running stack —
-95 builtins, a PingAM scripted decision node and a PingIDM endpoint — and they
-turned out to be the same Rhino build, agreeing on every one. The data is in
-`framework/engine-surface.json`, the method in
-[spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md), and a test fails the build
-if someone widens `lib` past what was measured. `fo doctor --engines` re-takes
-the measurement against a running stack and exits non-zero if the engine has
-moved — worth running after a ForgeOps upgrade, which is the one thing that can
-invalidate the pin without touching a line of this repo. Nothing is polyfilled
-(`useBuiltIns: false`), so this is the difference between a compile error and
-a `TypeError` in the middle of somebody's login.
+That `lib` is not guesswork, and the proof is exhaustive rather than
+representative. `tools/engine-coverage.mjs` reads the TypeScript lib files the
+tsconfigs name and enumerates **every** declaration that carries a runtime
+value — 714 of them — and `fo doctor --engines` probes all 714 on both engines,
+plus a behavioural corpus and four engine markers: 751 probes each. A test
+fails if the pin promises something the probe never checked, which is what
+stops the measurement quietly describing a subset of the lib.
+
+**234 of those 714 are not there.** Almost all of the typed arrays
+(`Float32Array#map` and its siblings — Rhino ships only `get`, `set` and
+`subarray`), plus `RegExp#flags`, `RegExp#sticky`, `Date#[Symbol.toPrimitive]`
+and a dozen more. None of it can be removed from the type system: `lib.es5` is
+monolithic and TypeScript cannot un-declare an interface member. So the line is
+held at the **use site** instead — a test resolves every property access in
+both programs through the compiler and fails the build if it reaches a builtin
+the engine lacks. `new Float32Array(8).map(f)` is a build failure, not a
+`TypeError` in the middle of somebody's login. Nothing is polyfilled
+(`useBuiltIns: false`), so there is no third option.
+
+The behavioural half is generated, not written: `tools/emit-corpus.ts` goes
+through the same esbuild-and-Babel pipeline an endpoint does, and the committed
+result (`framework/engine-emit-probe.js`) is what the engines actually run. A
+test fails if it drifts from the pipeline. The point is to exercise Babel's
+real helpers — `_toConsumableArray`, `_objectSpread`, `_createForOfIteratorHelper`
+— rather than a hand-written impression of them.
+
+The data is in `framework/engine-surface.json`, what it covers is frozen in
+`framework/engine-coverage.json` (a digest per lib file, so a TypeScript bump
+forces a re-measure), and the method is in
+[spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md). `fo doctor --engines`
+re-takes the measurement and exits non-zero if the engine has moved — worth
+running after a ForgeOps upgrade, which is the one thing that can invalidate
+the pin without touching a line of this repo. `--record` writes what it found
+back.
 
 PingAM scripts are a **separate TypeScript program** (`tsconfig.am.json`),
 because AM and IDM declare colliding globals — both have a `logger`, and they
-are not the same shape. They share a `lib` because they share an engine.
+are not the same shape. They share a `lib`, and at 97 probes they looked
+identical; at 751 they differ in two places (`Math` and `JSON` carry
+`Symbol.toStringTag` on IDM and not on AM). Neither is reachable from anything
+worth writing, and the shared lib stays sound because each program is checked
+against its own engine — not because the engines are the same object.
 
 ### Dependencies come from nix
 

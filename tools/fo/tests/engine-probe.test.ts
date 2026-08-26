@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   diffSurface,
@@ -8,9 +11,22 @@ import {
   unprobeableKeys,
 } from "../engine-probe.ts";
 
+// The behavioural corpus as `fo doctor --engines` splices it in: the real
+// output of the real build pipeline, committed under framework/.
+const EMIT_PROBE = readFileSync(
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..", "..", "..",
+    "platform", "typescript", "framework", "engine-emit-probe.js",
+  ),
+  "utf8",
+);
+
 /** Run generated probe source the way an engine would, and read the answers. */
 function runHere(keys: string[]): Record<string, boolean> {
-  const out = new Function(`return ${probeSource(keys)}`)() as string[];
+  const out = new Function(
+    `return ${probeSource(keys, EMIT_PROBE)}`,
+  )() as string[];
   return parseProbeOutput(out);
 }
 
@@ -80,18 +96,27 @@ test("a well-known symbol is looked up by the symbol, not by its name", () => {
   const got = runHere(["Array#[Symbol.iterator]"]);
   assert.equal(got["Array#[Symbol.iterator]"], true);
   assert.ok(
-    !probeSource(["Array#[Symbol.iterator]"]).includes('"Symbol.iterator"'),
+    !probeSource(["Array#[Symbol.iterator]"], "[]").includes('"Symbol.iterator"'),
     "the symbol must not be stringified into a property name",
   );
 });
 
-test("the behavioural checks run and pass on a compliant engine", () => {
+test("the behavioural corpus runs, and it is the pipeline's own output", () => {
   const got = runHere([]);
-  for (const k of ["emit:for-of-array", "emit:spread-array", "emit:index-access",
-    "emit:array-from-set", "emit:map-forEach", "emit:template-ok"]) {
+  for (const k of ["emit:for-of-array", "emit:spread-array",
+    "emit:spread-object", "emit:destructure-object", "emit:class-inheritance",
+    "emit:optional-chaining"]) {
     assert.equal(got[k], true, `${k} should hold on Node`);
   }
   assert.equal(got["g:<global-reachable>"], true);
+
+  // The old checks were hand-written ES5 that MIRRORED what Babel was assumed
+  // to emit: the spread case was a literal `[].concat(...)`. These helper
+  // names only exist because the corpus went through Babel, so their presence
+  // is what distinguishes the real output from another impression of it.
+  assert.match(EMIT_PROBE, /_toConsumableArray/);
+  assert.match(EMIT_PROBE, /_objectSpread/);
+  assert.match(EMIT_PROBE, /_createForOfIteratorHelper/);
 });
 
 test("output survives AM's JSON log, which welds junk onto the last token", () => {
@@ -136,7 +161,7 @@ test("a newly probed key alone is not drift", () => {
 });
 
 test("the probe list is derived from the surface, so it cannot drift from it", () => {
-  const src = probeSource(["Array#flat", "Object.hasOwn"]);
+  const src = probeSource(["Array#flat", "Object.hasOwn"], "[]");
   assert.ok(src.includes('"Array#flat"'));
   assert.ok(src.includes('"Object.hasOwn"'));
   assert.ok(!src.includes('"String#at"'));

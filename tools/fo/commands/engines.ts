@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { capture } from "../lib/proc.ts";
 import { fetchIngress } from "../lib/http.ts";
@@ -27,6 +27,11 @@ type SurfaceFile = {
 };
 
 const SURFACE = ["platform", "typescript", "framework", "engine-surface.json"];
+// The behavioural corpus, generated from tools/emit-corpus.ts by the same
+// esbuild+Babel pipeline that builds an endpoint. Committed so the probe needs
+// no node_modules; tests/emit-probe.test.mjs fails if it drifts from the
+// pipeline.
+const EMIT_PROBE = ["platform", "typescript", "framework", "engine-emit-probe.js"];
 
 export function readSurfaceFile(cfg: ResolvedConfig): SurfaceFile {
   return JSON.parse(
@@ -262,7 +267,48 @@ function report(name: string, d: Drift): void {
   for (const k of d.missing) detail(`  ${k}: probe returned no answer`);
 }
 
-export async function doctorEngines(cfg: ResolvedConfig): Promise<boolean> {
+/**
+ * Write what the engines just answered into engine-surface.json.
+ *
+ * The recorded file is a MEASUREMENT, so there has to be a way to retake it
+ * that is not hand-editing 700 booleans. It is a separate flag rather than
+ * automatic on drift, because "the engine changed" and "we accept the change"
+ * are different decisions and only the second one is a person's.
+ */
+function record(
+  cfg: ResolvedConfig,
+  surface: SurfaceFile,
+  measured: { am: Surface; idm: Surface },
+  today: string,
+): void {
+  const next = {
+    ...surface,
+    probedOn: today,
+    am: sorted(measured.am),
+    idm: sorted(measured.idm),
+  };
+  writeFileSync(
+    join(cfg.root, ...SURFACE),
+    JSON.stringify(next, null, 2) + "\n",
+    "utf8",
+  );
+}
+
+/** ISO date, so `probedOn` says when rather than how long ago. */
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function sorted(s: Surface): Surface {
+  return Object.fromEntries(
+    Object.entries(s).sort(([a], [b]) => (a < b ? -1 : 1)),
+  );
+}
+
+export async function doctorEngines(
+  cfg: ResolvedConfig,
+  writeBack = false,
+): Promise<boolean> {
   heading(`fo doctor --engines  (env ${cfg.env})`);
 
   const surface = readSurfaceFile(cfg);
@@ -270,6 +316,14 @@ export async function doctorEngines(cfg: ResolvedConfig): Promise<boolean> {
   const bad = unprobeableKeys(keys);
   if (bad.length) {
     warn(`engine-surface.json has keys the probe cannot generate: ${bad.join(", ")}`);
+    if (writeBack) {
+      // Recording writes what the probe ANSWERED, so a key it cannot generate
+      // would be dropped from the file rather than reported - the surface
+      // would quietly shrink back to whatever the generator happens to
+      // support, which is the circularity this whole audit exists to break.
+      fail("refusing to record while any key is ungeneratable; teach parseKey first");
+      return false;
+    }
   }
   detail(
     `recorded ${surface.probedOn} against ForgeOps ${surface.forgeopsRelease} ` +
@@ -277,14 +331,19 @@ export async function doctorEngines(cfg: ResolvedConfig): Promise<boolean> {
   );
   detail(`probing ${keys.length} builtins on both engines`);
 
-  const source = probeSource(keys);
+  const source = probeSource(
+    keys,
+    readFileSync(join(cfg.root, ...EMIT_PROBE), "utf8"),
+  );
   let allOk = true;
+  let idmMeasured: Surface | undefined;
+  let amMeasured: Surface | undefined;
 
   step("PingIDM (inline script eval)");
   try {
-    const measured = await probeIdm(cfg, source);
-    report("PingIDM", diffSurface(surface.idm, measured));
-    allOk &&= driftIsClean(diffSurface(surface.idm, measured));
+    idmMeasured = await probeIdm(cfg, source);
+    report("PingIDM", diffSurface(surface.idm, idmMeasured));
+    allOk &&= driftIsClean(diffSurface(surface.idm, idmMeasured));
   } catch (e) {
     fail(`PingIDM: ${(e as Error).message}`);
     allOk = false;
@@ -292,12 +351,29 @@ export async function doctorEngines(cfg: ResolvedConfig): Promise<boolean> {
 
   step("PingAM (temporary scripted decision, removed afterwards)");
   try {
-    const measured = await probeAm(cfg, source);
-    report("PingAM", diffSurface(surface.am, measured));
-    allOk &&= driftIsClean(diffSurface(surface.am, measured));
+    amMeasured = await probeAm(cfg, source);
+    report("PingAM", diffSurface(surface.am, amMeasured));
+    allOk &&= driftIsClean(diffSurface(surface.am, amMeasured));
   } catch (e) {
     fail(`PingAM: ${(e as Error).message}`);
     allOk = false;
+  }
+
+  if (writeBack) {
+    step("Recording");
+    if (idmMeasured === undefined || amMeasured === undefined) {
+      // Half a measurement would leave the file claiming both engines were
+      // probed on the same day when one of them was not answered at all.
+      fail("both engines must answer before the surface can be recorded");
+      return false;
+    }
+    record(cfg, surface, { am: amMeasured, idm: idmMeasured }, today());
+    ok(
+      `wrote ${Object.keys(amMeasured).length} AM and ` +
+        `${Object.keys(idmMeasured).length} IDM probes to engine-surface.json`,
+    );
+    detail("`npm test` in platform/typescript now says whether the pin holds.");
+    return true;
   }
 
   if (!allOk) {

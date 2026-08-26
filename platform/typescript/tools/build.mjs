@@ -31,11 +31,9 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import * as babel from "@babel/core";
-import * as esbuild from "esbuild";
-
 import { findRuntimeBanViolations } from "./idm-runtime-bans.mjs";
 import { generateManagedTypes } from "./managed-types.mjs";
+import { GLOBAL_NAME, bundle, downlevel } from "./pipeline.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(projectRoot, "..");
@@ -63,9 +61,6 @@ const manifestPath = join(projectRoot, ".fo-ts-manifest.json");
 const managedJsonPath = join(workspaceRoot, "idm", "conf", "managed.json");
 const generatedDir = join(projectRoot, "src", "generated");
 const managedTypesPath = join(generatedDir, "managed.ts");
-
-/** The IIFE binding the emitted file's final expression statement calls. */
-const GLOBAL_NAME = "__foMain";
 
 const argv = process.argv.slice(2);
 const watchMode = argv.includes("--watch");
@@ -155,23 +150,6 @@ function scriptUuid(name) {
   ].join("-");
 }
 
-async function bundle(entry, format, globalName) {
-  const result = await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    write: false,
-    format,
-    ...(globalName === undefined ? {} : { globalName }),
-    // ES5 is Babel's job — esbuild refuses to transform `const` to ES5.
-    target: "es2020",
-    platform: "neutral",
-    charset: "utf8",
-    legalComments: "none",
-    logLevel: "silent",
-  });
-  return result.outputFiles[0].text;
-}
-
 /**
  * Read the endpoint's declaration by importing it. Bundling to ESM first means
  * the tool never has to care how the source is split up or whether node can
@@ -193,40 +171,6 @@ async function readDefinition(entry, name) {
     );
   }
   return main.definition;
-}
-
-function downlevel(code, name) {
-  const result = babel.transformSync(code, {
-    filename: name + ".bundle.js",
-    babelrc: false,
-    configFile: false,
-    sourceType: "script",
-    compact: false,
-    comments: false,
-    assumptions: {
-      constantSuper: true,
-      noClassCalls: true,
-      setClassMethods: true,
-      superIsCallableConstructor: true,
-      noDocumentAll: true,
-    },
-    presets: [
-      [
-        "@babel/preset-env",
-        {
-          targets: { ie: "11" },
-          modules: false,
-          // Rhino has Map/Set/Symbol/Promise natively; a core-js polyfill would
-          // be dead weight and cannot be installed on IDM anyway.
-          useBuiltIns: false,
-        },
-      ],
-    ],
-  });
-  if (result === null || typeof result.code !== "string") {
-    throw new Error(name + ": Babel produced no output");
-  }
-  return result.code;
 }
 
 function banner(name, sourceRelative) {
