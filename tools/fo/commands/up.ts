@@ -105,7 +105,15 @@ export async function up(
   // from a destroyed cluster, which is the only place the ordering shows.
   await ensureLogStack(cfg);
 
-  await waitReady(cfg, 300);
+  // The caller's timeout, not a third hardcoded number. This was the last of
+  // THREE waits in `fo up` and only one of them honoured `--timeout`; the
+  // cert-manager one above was found by an e2e failure, and this one by
+  // reading the log of the run that fixed it, which printed "up to 300s"
+  // under a `--timeout` that was 900.
+  //
+  // It is the cheapest of the three to extend: helm has already returned, so
+  // this is only covering the log stack and any pod still settling.
+  await waitReady(cfg, opts.timeoutSeconds);
   info(cfg, false);
 }
 
