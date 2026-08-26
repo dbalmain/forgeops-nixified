@@ -29,6 +29,8 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { RUNTIME_PROGRAMS } from "./engine-usage.mjs";
+
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 
@@ -120,8 +122,11 @@ export function readTsconfig(name) {
  * what makes that intent load-bearing instead of a coincidence.
  */
 export function sharedRuntimeLibs() {
-  const programs = ["tsconfig.json", "tsconfig.am.json"];
-  const [first, ...rest] = programs.map((name) => ({
+  // From `RUNTIME_PROGRAMS`, which is documented as THE list, rather than a
+  // second copy of it here -- a third runtime program added there would
+  // otherwise recreate exactly the coverage drift this function exists to
+  // catch.
+  const [first, ...rest] = RUNTIME_PROGRAMS.map(({ tsconfig: name }) => ({
     name,
     lib: readTsconfig(name).compilerOptions.lib,
   }));

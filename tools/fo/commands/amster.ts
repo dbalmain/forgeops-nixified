@@ -2,7 +2,7 @@ import { anyObject, arrayOf, decode, num, obj, opt } from "../lib/shape.ts";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { capture, sleep } from "../lib/proc.ts";
-import { kubeEnv, ns, q } from "../lib/k8s.ts";
+import { getOptional, kubeEnv, ns, q } from "../lib/k8s.ts";
 import { detail, ok, step, warn } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
 
@@ -147,9 +147,10 @@ export async function runAmster(
   const first = await runImportJob(cfg, opts);
   if (first.state === "ok") return;
   // A TIMEOUT IS NOT A SUCCESS. This returned normally for `timeout`, so an
-  // import that never finished -- or `--timeout 0`, which polls zero times --
-  // reported "amster config imported" and exited zero, with the entities
-  // absent. `fo up` runs this, so the whole install claimed to have worked.
+  // import that never finished -- or `--timeout 0`, which polled zero times --
+  // reported "amster config imported" and exited zero. `fo up` does not come
+  // through here (it waits on the chart's own post-install hook), but `fo
+  // amster` and the watcher do, and both are how a developer pushes config.
   if (first.state === "timeout") throw new Error(first.error);
 
   if (!looksLikeForwardReference(first.log)) {
@@ -250,16 +251,12 @@ async function runImportJob(
     // visible for a moment after `apply`, which is exit zero and empty output;
     // anything else is the cluster failing, and treating THAT as "keep
     // waiting" burnt the whole timeout and then blamed the job.
-    const r = capture(
-      "kubectl",
-      ns(cfg, ["get", "job", name, "-o", "json", "--ignore-not-found"]),
-      { env: kubeEnv(cfg) },
-    );
-    if (r.stdout.trim() === "") {
+    const out = getOptional(cfg, ["job", name, "-o", "json"]);
+    if (out.trim() === "") {
       await sleep(3000);
       continue;
     }
-    const status = decode(r.stdout, `kubectl get job ${name}`, JOB_STATUS)
+    const status = decode(out, `kubectl get job ${name}`, JOB_STATUS)
       .status ?? { succeeded: undefined, failed: undefined };
     if ((status.succeeded ?? 0) > 0) {
       const log = reportImport(cfg, name);
@@ -282,9 +279,10 @@ async function runImportJob(
     state: "timeout",
     log: "",
     error:
-      `amster job/${name} was still running after ${opts.timeoutSeconds}s, ` +
-      "so the config was NOT imported. It is still going - watch it with " +
-      `\`kubectl -n ${cfg.namespace} get job ${name} -w\`, or re-run with a ` +
-      "longer --timeout. Nothing was torn down.",
+      `amster job/${name} did not finish within ${opts.timeoutSeconds}s, so ` +
+      "the import is UNCONFIRMED - it may be partly applied, and it may " +
+      "well complete a moment from now. The job is still running: watch it " +
+      `with \`kubectl -n ${cfg.namespace} get job ${name} -w\`, or re-run ` +
+      "with a longer --timeout (0 for none). Nothing was torn down.",
   };
 }

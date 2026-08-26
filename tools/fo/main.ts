@@ -190,13 +190,12 @@ async function main(): Promise<void> {
       if (only && !["conf", "script", "data"].includes(only)) {
         die(`fo sync takes "conf", "script" or "data", not "${only}"`);
       }
-      // The return value is the answer, and it was thrown away: with no
-      // running IDM pod `syncIdm` warns and returns false, and `fo sync`
-      // exited ZERO having pushed nothing. A sync command that cannot fail is
-      // no use in a script.
-      if (!syncIdm(cfg, only as "conf" | "script" | "data" | undefined)) {
-        die("nothing was synced - see the warning above");
-      }
+      // `syncIdm` throws when it could not do its job. It used to WARN and
+      // return false instead, and the caller discarded that, so `fo sync`
+      // exited zero having pushed nothing at a cluster it could not reach.
+      // Note the other half of that fix: an ordinary no-op is a SUCCESS, so
+      // this must not turn "nothing to copy" into a failure either.
+      syncIdm(cfg, only as "conf" | "script" | "data" | undefined);
       break;
     }
     case "build":

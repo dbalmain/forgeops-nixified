@@ -69,14 +69,27 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
         if (!has("ss")) {
           return { unknown: "`ss` is not on PATH (iproute2), so nothing here can see what is listening" };
         }
+        // `ss` DIRECTLY, not down a pipe. `ss ... | awk ... | head -1` takes
+        // its exit status from `head`, which succeeds whatever `ss` did -- so
+        // an `ss` that ran and failed produced empty output, and empty read as
+        // "nothing is listening". The missing-binary case above is only half
+        // of that; this is the other half.
+        const listening = capture("ss", ["-lnt"], { allowFailure: true });
+        if (listening.code !== 0) {
+          return {
+            unknown:
+              `\`ss -lnt\` exited ${listening.code}: ` +
+              (listening.stderr.trim() || "no output"),
+          };
+        }
         const busy: string[] = [];
         for (const p of [80, 443]) {
-          const r = capture(
-            "sh",
-            ["-c", `ss -lnt 2>/dev/null | awk '$4 ~ /:${p}$/' | head -1`],
-            { allowFailure: true },
-          );
-          if (r.stdout.trim()) busy.push(String(p));
+          const port = new RegExp(`:${p}\\s`);
+          const found = listening.stdout
+            .split("\n")
+            .slice(1)
+            .some((line) => port.test(line.trim().split(/\s+/)[3] + " "));
+          if (found) busy.push(String(p));
         }
         if (busy.length === 0) return true;
         const ours = capture(

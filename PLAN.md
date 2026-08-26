@@ -1545,10 +1545,12 @@ the next review to find the fourth, codex was asked to trace every
 `allowFailure` and empty-result conversion in `tools/fo`. It found seven more.
 
 - **`fo amster` exited zero on timeout**, so a config import that never
-  finished reported success — and `fo up` runs it, so the whole install claimed
-  to have worked with the entities absent. `--timeout 0` was worse: it polled
-  zero times and returned immediately. It now means "no deadline", as it does
-  everywhere else in this CLI.
+  finished reported success. `--timeout 0` was worse: it polled zero times and
+  returned immediately. It now means "no deadline", as it does everywhere else
+  in this CLI. (`fo up` does not use this path — it waits on the chart's own
+  post-install hook — but `fo amster` and the watcher do, and a timeout is
+  reported as UNCONFIRMED rather than as "not imported", because the job may be
+  partly applied or about to finish.)
 - **`fo amster` also folded two unreadable-cluster cases into "keep going".**
   The initial job lookup treated any failure as an empty list, and the polling
   GET treated any failure as "not visible yet" — burning the whole timeout and
@@ -1582,12 +1584,18 @@ the next review to find the fourth, codex was asked to trace every
   `sharedRuntimeLibs()` asserts it, and the seed, manifest, coverage gate and
   test all read through it.
 
-And the root cause got an answer rather than seven patches: `allowFailure` now
-takes a predicate as well as `true`, so a site that accepts a failure says
-WHICH one and every other failure throws. `true` is left for genuinely
-best-effort work — fetching a crash log to print, tearing down a probe — and
-the option documents that distinction where someone reaching for it will read
-it.
+The seven sites were fixed individually. There is no abstraction quietly
+enforcing this, and an earlier draft of these notes claimed one — a predicate
+form of `allowFailure` was added and removed within the same sprint, because it
+had no call sites and `stream()` ignored it. Unused scaffolding that *looks*
+like a policy is worse than a comment admitting it is one.
+
+What there is instead: `lib/k8s.ts` grew `getOptional()` for the “named
+resource that may not exist” case, which covers most of them, and
+`allowFailure`'s doc comment names the defects that came from reaching for it
+and spells out the three questions to ask first — is this a list query (exits
+zero when empty, so there is nothing to allow), a named get (wants
+`--ignore-not-found`), or genuinely best-effort (the only case that qualifies)?
 
 Verified by pointing the kubeconfig at a dead port: `fo sync`, `fo info`,
 `fo shell`, `fo restart` and `fo status` all exit non-zero with the runtime's

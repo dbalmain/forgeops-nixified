@@ -8,18 +8,26 @@ export type RunOptions = {
   /**
    * Don't throw on a non-zero exit; return it instead.
    *
-   * PREFER THE PREDICATE FORM. `true` accepts EVERY failure, and the recurring
-   * bug in this CLI has been exactly that: a tool that could not run turned
-   * into a confident negative. A dead Docker daemon became "no cluster" and
-   * `fo down --destroy` deleted live state; an unreadable API server became
-   * "no pods" and `fo up` reported a stack that was not serving; an
-   * unreachable cluster became "no IDM pod" and `fo sync` exited zero.
+   * READ THIS BEFORE REACHING FOR IT. It accepts EVERY failure, and the
+   * recurring bug in this CLI has been exactly that -- a tool that could not
+   * run becoming a confident negative. A dead Docker daemon became "no
+   * cluster" and `fo down --destroy` deleted live state. An unreadable API
+   * server became "no pods" and `fo up` reported a stack that was not serving.
+   * An unreachable cluster became "no IDM pod" and `fo sync` exited zero. A
+   * missing `ss` became "ports free".
    *
-   * Passing a predicate says WHICH failure is expected and lets every other
-   * one throw. `true` is for genuinely best-effort work whose result nothing
-   * depends on -- fetching crash logs to print, tearing down a probe.
+   * Before using it, check which question you are actually asking:
+   *
+   *   - A LIST query (`get pods -l ...`) exits ZERO with empty output when
+   *     nothing matches. There is no failure to allow; do not pass this.
+   *   - A NAMED GET for something that may not exist wants
+   *     `--ignore-not-found` (see `getOptional` in lib/k8s.ts), which makes
+   *     absence exit zero and leaves real failures failing.
+   *   - Only genuinely BEST-EFFORT work belongs here: fetching a crash log to
+   *     print, tearing down a probe, a capability sniff. If anything downstream
+   *     believes the answer, this is the wrong tool.
    */
-  allowFailure?: boolean | ((r: RunResult) => boolean);
+  allowFailure?: boolean;
   cwd?: string;
 };
 
@@ -27,8 +35,8 @@ export type RunResult = { code: number; stdout: string; stderr: string };
 
 /**
  * Run a command and capture its output. Throws on failure unless
- * `allowFailure` accepts it, because a silently-ignored kubectl error is how
- * you end up debugging the wrong thing ten minutes later.
+ * `allowFailure` is set, because a silently-ignored kubectl error is how you
+ * end up debugging the wrong thing ten minutes later.
  */
 export function capture(
   cmd: string,
@@ -48,11 +56,7 @@ export function capture(
     stdout: r.stdout ?? "",
     stderr: r.stderr ?? "",
   };
-  const accepted =
-    typeof opts.allowFailure === "function"
-      ? opts.allowFailure(res)
-      : opts.allowFailure === true;
-  if (res.code !== 0 && !accepted) {
+  if (res.code !== 0 && !opts.allowFailure) {
     throw new Error(
       `${cmd} ${args.join(" ")} exited ${res.code}\n${res.stderr || res.stdout}`,
     );
@@ -75,9 +79,7 @@ export function stream(
     child.on("error", reject);
     child.on("close", (code) => {
       const c = code ?? -1;
-      // `stream` inherits stdio, so there is nothing to hand a predicate; only
-      // the boolean form applies here.
-      if (c !== 0 && opts.allowFailure !== true) {
+      if (c !== 0 && !opts.allowFailure) {
         reject(new Error(`${cmd} ${args.join(" ")} exited ${c}`));
       } else {
         resolve(c);
@@ -110,11 +112,7 @@ export function captureAsync(
     child.on("error", reject);
     child.on("close", (code) => {
       const res = { code: code ?? -1, stdout, stderr };
-      const accepted =
-        typeof opts.allowFailure === "function"
-          ? opts.allowFailure(res)
-          : opts.allowFailure === true;
-      if (res.code !== 0 && !accepted) {
+      if (res.code !== 0 && !opts.allowFailure) {
         reject(new Error(`${cmd} ${args.join(" ")} exited ${res.code}\n${stderr || stdout}`));
       } else {
         resolve(res);

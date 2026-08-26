@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { capture, stream } from "../lib/proc.ts";
-import { kubeEnv, ns } from "../lib/k8s.ts";
+import { getOptional, kubeEnv, ns } from "../lib/k8s.ts";
 import { detail, ok, step, warn } from "../lib/ui.ts";
 import {
   LOGS_NAME,
@@ -115,19 +115,13 @@ export function removeLogStack(
  * in the wrong place.
  */
 export function logStackReady(cfg: ResolvedConfig): boolean {
-  const r = capture(
-    "kubectl",
-    ns(cfg, [
-      "get",
-      "deployment",
-      LOGS_NAME,
-      "--ignore-not-found",
-      "-o",
-      "jsonpath={.status.readyReplicas}",
-    ]),
-    { env: kubeEnv(cfg) },
-  );
-  return Number(r.stdout.trim() || "0") > 0;
+  const out = getOptional(cfg, [
+    "deployment",
+    LOGS_NAME,
+    "-o",
+    "jsonpath={.status.readyReplicas}",
+  ]);
+  return Number(out.trim() || "0") > 0;
 }
 
 /** Warn, but do not fail, when the collector is not up. */

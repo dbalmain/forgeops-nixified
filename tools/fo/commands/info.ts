@@ -1,4 +1,5 @@
 import { capture } from "../lib/proc.ts";
+import { getOptional } from "../lib/k8s.ts";
 import { logsUrl } from "../logstack.ts";
 import { bold, dim, heading, table } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
@@ -53,21 +54,12 @@ export function readSecret(
   // exist yet is a real answer; an unreachable cluster is not, and folding the
   // two together made `fo info --json` print empty credentials and exit ZERO
   // against a stack it could not read.
-  const r = capture(
-    "kubectl",
-    [
-      "-n",
-      cfg.namespace,
-      "get",
-      "secret",
-      secret,
-      "--ignore-not-found",
-      "-o",
-      `jsonpath={.data.${key.replace(/\./g, "\\.")}}`,
-    ],
-    { env: { KUBECONFIG: cfg.kubeconfig } },
-  );
-  const b64 = r.stdout.trim();
+  const b64 = getOptional(cfg, [
+    "secret",
+    secret,
+    "-o",
+    `jsonpath={.data.${key.replace(/\./g, "\\.")}}`,
+  ]).trim();
   return b64 ? Buffer.from(b64, "base64").toString("utf8") : undefined;
 }
 
