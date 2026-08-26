@@ -14,7 +14,14 @@ import type { ResolvedConfig } from "../config.ts";
  */
 type Answer = true | string | { unknown: string };
 
-type Check = { name: string; run: () => Promise<Answer> };
+/**
+ * `fatal` blocks `fo up`; everything else is advisory and only warns.
+ *
+ * Declared per check rather than matched on the name, which is what this used
+ * to do (`c.name.includes("tools")`). A check's severity should not change
+ * because somebody reworded its label.
+ */
+type Check = { name: string; fatal?: boolean; run: () => Promise<Answer> };
 
 
 const REQUIRED_TOOLS = ["docker", "k3d", "kubectl", "helm"];
@@ -25,6 +32,7 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
   const checks: Check[] = [
     {
       name: "required tools on PATH",
+      fatal: true,
       run: async () => {
         const missing = REQUIRED_TOOLS.filter((t) => !has(t));
         return missing.length === 0
@@ -34,6 +42,7 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
     },
     {
       name: "docker daemon reachable",
+      fatal: true,
       run: async () => {
         const r = capture("docker", ["info", "--format", "{{.ServerVersion}}"], {
           allowFailure: true,
@@ -45,6 +54,13 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
     },
     {
       name: `${cfg.fqdn} resolves to loopback`,
+      // FATAL. Every URL `fo up` finishes by printing is behind this hostname,
+      // so a stack the developer cannot open is not a successful `fo up` -- it
+      // used to warn, deploy the whole platform, and then hand over a link
+      // that does not resolve. The message says how to fix it in one config
+      // line, which is a better escape hatch than a flag for building an
+      // unreachable stack.
+      fatal: true,
       run: async () => {
         try {
           const r = await lookup(cfg.fqdn, { all: true });
@@ -148,9 +164,7 @@ export async function doctor(cfg: ResolvedConfig): Promise<boolean> {
       // a preflight worse than no preflight.
       warn(`${c.name}: unknown - ${r.unknown}`);
     } else {
-      // Resolution and headroom are advisory; tools and docker are fatal.
-      const fatal = c.name.includes("tools") || c.name.includes("docker daemon");
-      if (fatal) {
+      if (c.fatal === true) {
         fail(`${c.name}: ${r}`);
         allOk = false;
       } else {

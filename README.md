@@ -17,10 +17,23 @@ fo down
 
 ## What you need
 
-**nix, and a Docker daemon.** That is the whole list. k3d needs a container
-runtime, which is irreducible; everything else — kubectl, helm, k3d, stern,
-Node — comes from the flake at pinned versions. `fo doctor` checks and tells
-you exactly what is missing.
+**nix with flakes enabled, and a Docker daemon.** That is the whole list. k3d
+needs a container runtime, which is irreducible; everything else — kubectl,
+helm, k3d, stern, Node — comes from the flake at pinned versions. `fo doctor`
+checks and tells you exactly what is missing.
+
+Flakes are still nominally experimental, so the upstream installer leaves them
+off and the first command fails with `experimental Nix feature 'nix-command' is
+disabled` before anything in this repo runs. Turn them on once:
+
+```sh
+mkdir -p ~/.config/nix
+echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+```
+
+The Determinate Systems installer and NixOS configurations that set
+`nix.settings.experimental-features` already have this; `nix flake --help`
+succeeding means you are fine.
 
 `fo` itself is TypeScript run directly by Node 24's type stripping: no build
 step, no bundler, and **no npm dependencies at all**.
