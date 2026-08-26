@@ -50,8 +50,22 @@ export function ensureStorageClass(cfg: ResolvedConfig): void {
  * cert-manager is the only cluster prerequisite. Since ForgeOps 2026.3 the
  * chart generates its own secrets with Helm's own functions, so neither
  * secret-agent nor secret-generator is needed.
+ *
+ * Takes the caller's timeout rather than hardcoding one, because `fo up
+ * --timeout` reached the platform install below and silently did not reach
+ * here - one of the two waits ignored the only knob there was.
+ *
+ * That is a consistency fix, NOT a diagnosis. The first e2e run died at
+ * exactly 5m00s here with the webhook Available 0/1, and the obvious story was
+ * that cold image pulls on a runner outgrew a hardcoded 5m. Measured instead
+ * of assumed: into a brand-new k3d cluster with an empty containerd, pulling
+ * all three images from quay.io for real, this takes 31 SECONDS. 5m had ten
+ * times the headroom it needed, so whatever the runner hit, it was not this.
  */
-export async function ensureCertManager(cfg: ResolvedConfig): Promise<void> {
+export async function ensureCertManager(
+  cfg: ResolvedConfig,
+  opts: { timeoutSeconds: number },
+): Promise<void> {
   const installed = capture(
     "helm",
     ["-n", "cert-manager", "status", "cert-manager", "-o", "json"],
@@ -63,6 +77,7 @@ export async function ensureCertManager(cfg: ResolvedConfig): Promise<void> {
   }
   step(`Installing cert-manager ${CERT_MANAGER_VERSION}`);
   detail("issues the ingress cert and the PingDS keypairs");
+  detail(`about 30s on a cold cluster; giving up after ${opts.timeoutSeconds}s`);
   await stream(
     "helm",
     [
@@ -81,7 +96,7 @@ export async function ensureCertManager(cfg: ResolvedConfig): Promise<void> {
       "crds.enabled=true",
       "--wait",
       "--timeout",
-      "5m",
+      `${opts.timeoutSeconds}s`,
     ],
     { env: { KUBECONFIG: cfg.kubeconfig } },
   );

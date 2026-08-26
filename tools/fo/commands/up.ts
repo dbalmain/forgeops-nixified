@@ -32,7 +32,7 @@ export async function up(
 
   await ensureCluster(cfg);
   ensureStorageClass(cfg);
-  await ensureCertManager(cfg);
+  await ensureCertManager(cfg, { timeoutSeconds: opts.timeoutSeconds });
   ensureNamespace(cfg);
   ensureSecrets(cfg);
 

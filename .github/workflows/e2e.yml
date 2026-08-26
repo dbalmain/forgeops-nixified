@@ -117,14 +117,37 @@ jobs:
       - name: engine surface still matches what the lib pin claims
         run: nix develop --command fo doctor --engines
 
+      # Cluster-wide, NOT `-n dev`. The first real failure this job caught was
+      # in the cert-manager namespace, before the platform namespace existed -
+      # so a dev-scoped dump answered "No resources found" three times and the
+      # one step whose job is to explain a failure explained nothing.
       - name: diagnostics on failure
         if: failure()
         run: |
+          # shellcheck disable=SC2016
+          # Same reason as the trace step above: every expansion below belongs
+          # to the inner shell that runs inside the nix devShell.
           nix develop --command sh -c '
             export KUBECONFIG=.fo/dev/kubeconfig
-            kubectl -n dev get pods -o wide || true
-            kubectl -n dev get events --sort-by=.lastTimestamp | tail -40 || true
-            kubectl -n dev describe pods | grep -A10 "Events:" | tail -60 || true
+            echo "--- nodes ---"
+            kubectl get nodes -o wide || true
+            echo "--- pods (all namespaces) ---"
+            kubectl get pods -A -o wide || true
+            # Succeeded is excluded as well as Running: the stack finishes
+            # several Jobs (amster, keystore-create, ds-set-passwords) and
+            # phase!=Running alone describes every one of them, burying the pod
+            # that actually failed under pages of "Events: <none>".
+            echo "--- pods neither Running nor Succeeded, described ---"
+            kubectl get pods -A \
+              --field-selector=status.phase!=Running,status.phase!=Succeeded \
+              -o "jsonpath={range .items[*]}{.metadata.namespace} {.metadata.name}{\"\n\"}{end}" \
+              | while read -r pns pname; do
+                  [ -n "$pns" ] || continue
+                  echo "=== $pns/$pname ==="
+                  kubectl -n "$pns" describe pod "$pname" | sed -n "/^Events:/,\$p" || true
+                done
+            echo "--- recent events (all namespaces) ---"
+            kubectl get events -A --sort-by=.lastTimestamp | tail -60 || true
           '
 
       # `--destroy` rather than a plain down: the runner is thrown away either
