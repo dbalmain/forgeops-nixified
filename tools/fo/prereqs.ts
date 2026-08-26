@@ -66,18 +66,19 @@ export async function ensureCertManager(
   cfg: ResolvedConfig,
   opts: { timeoutSeconds: number },
 ): Promise<void> {
-  const installed = capture(
-    "helm",
-    ["-n", "cert-manager", "status", "cert-manager", "-o", "json"],
-    { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
-  );
-  if (installed.code === 0) {
-    ok(`cert-manager already installed`);
-    return;
-  }
-  step(`Installing cert-manager ${CERT_MANAGER_VERSION}`);
+  // Converge every time rather than short-circuiting on "does a release
+  // exist". `helm status` exiting zero says a release object is there, NOT
+  // that its webhook is serving - so a half-installed or unhealthy
+  // cert-manager was reported as "already installed" and `fo up` walked on to
+  // fail later, somewhere less obvious. A healthy converge is a few seconds
+  // and needs no second state machine to decide whether to skip it.
+  step(`Converging cert-manager ${CERT_MANAGER_VERSION}`);
   detail("issues the ingress cert and the PingDS keypairs");
-  detail(`about 30s on a cold cluster; giving up after ${opts.timeoutSeconds}s`);
+  detail(
+    opts.timeoutSeconds === 0
+      ? "about 30s on a cold cluster; no deadline"
+      : `about 30s on a cold cluster; giving up after ${opts.timeoutSeconds}s`,
+  );
   await stream(
     "helm",
     [
@@ -96,7 +97,7 @@ export async function ensureCertManager(
       "crds.enabled=true",
       "--wait",
       "--timeout",
-      `${opts.timeoutSeconds}s`,
+      opts.timeoutSeconds === 0 ? "24h" : `${opts.timeoutSeconds}s`,
     ],
     { env: { KUBECONFIG: cfg.kubeconfig } },
   );

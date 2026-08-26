@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sleep, stream } from "../lib/proc.ts";
+import { capture, sleep, stream } from "../lib/proc.ts";
 import { detail, die, heading, ok, step } from "../lib/ui.ts";
 import { ensureCluster } from "../cluster/k3d.ts";
 import { ensureCertManager, ensureNamespace, ensureStorageClass } from "../prereqs.ts";
@@ -9,7 +9,7 @@ import { ensureSecrets } from "../secrets.ts";
 import { buildValues, renderValues } from "../values.ts";
 import { doctor } from "./doctor.ts";
 import { ensureLogStack } from "./logstore.ts";
-import { getPods, settled } from "./status.ts";
+import { blockers, getPods, settled } from "./status.ts";
 import { info } from "./info.ts";
 import type { ResolvedConfig } from "../config.ts";
 
@@ -86,7 +86,10 @@ export async function up(
         // Helm is reasserting a value it already agrees with.
         "--force-conflicts",
         "--timeout",
-        `${opts.timeoutSeconds}s`,
+        // `--timeout 0s` is not "no deadline" to helm, so spell the unbounded
+        // case as a ceiling no real install reaches rather than passing a
+        // zero whose meaning we would be guessing at.
+        opts.timeoutSeconds === 0 ? "24h" : `${opts.timeoutSeconds}s`,
       ],
       { env: { KUBECONFIG: cfg.kubeconfig } },
     );
@@ -137,10 +140,17 @@ async function waitReady(
   cfg: ResolvedConfig,
   timeoutSeconds: number,
 ): Promise<void> {
-  step(`Waiting for pods (up to ${timeoutSeconds}s)`);
+  // 0 means "no deadline": an honest option for a first run on a slow link,
+  // rather than making unbounded waiting the implicit default for everyone.
+  const unbounded = timeoutSeconds === 0;
+  step(
+    unbounded
+      ? "Waiting for pods (no deadline)"
+      : `Waiting for pods (up to ${timeoutSeconds}s)`,
+  );
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastLine = "";
-  while (Date.now() < deadline) {
+  while (unbounded || Date.now() < deadline) {
     const pods = getPods(cfg);
     if (pods.length > 0) {
       const done = pods.filter(settled).length;
@@ -153,10 +163,58 @@ async function waitReady(
         ok("all pods settled");
         return;
       }
+      // Waiting out a deadline for something that cannot fix itself wastes
+      // the developer's time and buries the real error under a timeout.
+      const dead = blockers(pods).filter((b) => b.terminal);
+      if (dead.length > 0) {
+        for (const b of dead) detail(`${b.pod}: ${b.summary}`);
+        showLogs(cfg, dead.map((b) => b.pod));
+        die(
+          `${dead[0]!.pod} cannot start: ${dead[0]!.summary}. ` +
+            "Nothing was torn down; fix it and re-run `fo up`.",
+        );
+      }
     }
     await sleep(5000);
   }
-  // Not fatal: a slow image pull is the usual cause and the stack recovers on
-  // its own. Say so rather than tearing anything down.
-  detail("timed out waiting; check `fo status` - a slow pull will catch up");
+  // A timeout is a FAILURE, even though the stack may well finish on its own a
+  // minute later. `fo up` promises a working stack when it returns; Kubernetes
+  // getting there afterwards does not make this invocation successful, and
+  // returning zero here is what let the command print URLs and an admin
+  // password for a stack that was not serving.
+  //
+  // Nothing is torn down: leaving the slow resources running is what makes
+  // re-running cheap, and a re-run is the documented recovery.
+  const left = blockers(getPods(cfg));
+  for (const b of left) detail(`${b.pod}: ${b.summary}`);
+  die(
+    `timed out after ${timeoutSeconds}s with ${left.length} pod(s) not ready. ` +
+      "They are still running - re-run `fo up` to keep waiting, use " +
+      "`fo up --timeout 0` for no deadline, or see `fo status`.",
+  );
+}
+
+/** The previous container's output, which is where a crash loop says why. */
+function showLogs(cfg: ResolvedConfig, pods: string[]): void {
+  for (const pod of pods.slice(0, 3)) {
+    for (const previous of [true, false]) {
+      const r = capture(
+        "kubectl",
+        [
+          "-n",
+          cfg.namespace,
+          "logs",
+          pod,
+          "--tail=20",
+          ...(previous ? ["--previous"] : []),
+        ],
+        { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
+      );
+      if (r.code === 0 && r.stdout.trim()) {
+        detail(`${pod} logs${previous ? " (previous container)" : ""}:`);
+        for (const l of r.stdout.trimEnd().split("\n")) detail(`  ${l}`);
+        break;
+      }
+    }
+  }
 }

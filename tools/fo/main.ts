@@ -30,6 +30,7 @@ const USAGE = `
 ${bold("fo")} - local Ping Identity Platform stack (ForgeOps ${RELEASE.forgeops}, platform ${RELEASE.productVersion})
 
   fo up [--env NAME] [--timeout SECONDS]   bring the stack up (idempotent)
+                                           --timeout 0 waits with no deadline
   fo down [--env NAME] [--destroy]         remove the env; --destroy kills the cluster
   fo status [--env NAME]                   pod readiness
   fo info [--env NAME] [--json]            URLs and passwords
