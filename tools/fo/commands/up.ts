@@ -9,7 +9,14 @@ import { ensureSecrets } from "../secrets.ts";
 import { buildValues, renderValues } from "../values.ts";
 import { doctor } from "./doctor.ts";
 import { ensureLogStack } from "./logstore.ts";
-import { blockers, getPods, settled } from "./status.ts";
+import {
+  blockers,
+  formatGap,
+  getPods,
+  restartBaseline,
+  settled,
+  workloadGaps,
+} from "./status.ts";
 import { info } from "./info.ts";
 import type { ResolvedConfig } from "../config.ts";
 
@@ -120,9 +127,19 @@ export async function up(
   info(cfg, false);
 }
 
-/** Report pod progress while helm waits on its hooks. */
+/**
+ * Report pod progress while helm waits on its hooks.
+ *
+ * It also names terminal blockers as they appear. `waitReady` cannot: it does
+ * not start until helm returns, so a pod wedged on a bad image spent helm's
+ * whole timeout invisible and the developer read a generic helm failure
+ * minutes later. The ticker does not abort - helm owns its own release and
+ * killing it mid-hook is worse than waiting - but the real reason is on screen
+ * from the first tick that sees it.
+ */
 function startTicker(cfg: ResolvedConfig): { stop: () => void } {
   let last = "";
+  const reported = new Set<string>();
   const t = setInterval(() => {
     const pods = getPods(cfg);
     if (pods.length === 0) return;
@@ -130,6 +147,12 @@ function startTicker(cfg: ResolvedConfig): { stop: () => void } {
     if (line !== last) {
       detail(line);
       last = line;
+    }
+    for (const b of blockers(pods).filter((x) => x.terminal)) {
+      const key = `${b.pod}: ${b.summary}`;
+      if (reported.has(key)) continue;
+      reported.add(key);
+      detail(`${key} — helm will not recover from this`);
     }
   }, 15000);
   t.unref?.();
@@ -150,22 +173,33 @@ async function waitReady(
   );
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastLine = "";
+  // Crash loops are judged by what happens FROM HERE. `restartCount` is a
+  // lifetime total, so without a baseline a pod that had already restarted
+  // three times - a slow first `fo up`, a node drain - would be declared
+  // terminal on the first tick of the next one.
+  const baseline = restartBaseline(getPods(cfg));
   while (unbounded || Date.now() < deadline) {
     const pods = getPods(cfg);
+    // Asking only whether the pods that EXIST are settled is not the same
+    // question as whether the stack arrived: a Deployment that produced no
+    // pod at all leaves nothing unready to count. Both have to hold.
+    const gaps = workloadGaps(cfg);
     if (pods.length > 0) {
       const done = pods.filter(settled).length;
-      const line = `${done}/${pods.length} settled`;
+      const line =
+        `${done}/${pods.length} settled` +
+        (gaps.length > 0 ? `, ${gaps.length} workload(s) short` : "");
       if (line !== lastLine) {
         detail(line);
         lastLine = line;
       }
-      if (done === pods.length) {
+      if (done === pods.length && gaps.length === 0) {
         ok("all pods settled");
         return;
       }
       // Waiting out a deadline for something that cannot fix itself wastes
       // the developer's time and buries the real error under a timeout.
-      const dead = blockers(pods).filter((b) => b.terminal);
+      const dead = blockers(pods, baseline).filter((b) => b.terminal);
       if (dead.length > 0) {
         for (const b of dead) detail(`${b.pod}: ${b.summary}`);
         showLogs(cfg, dead.map((b) => b.pod));
@@ -185,11 +219,14 @@ async function waitReady(
   //
   // Nothing is torn down: leaving the slow resources running is what makes
   // re-running cheap, and a re-run is the documented recovery.
-  const left = blockers(getPods(cfg));
+  const left = blockers(getPods(cfg), baseline);
   for (const b of left) detail(`${b.pod}: ${b.summary}`);
+  const short = workloadGaps(cfg);
+  for (const g of short) detail(formatGap(g));
   die(
-    `timed out after ${timeoutSeconds}s with ${left.length} pod(s) not ready. ` +
-      "They are still running - re-run `fo up` to keep waiting, use " +
+    `timed out after ${timeoutSeconds}s with ${left.length} pod(s) not ready` +
+      (short.length > 0 ? ` and ${short.length} workload(s) short` : "") +
+      ". They are still running - re-run `fo up` to keep waiting, use " +
       "`fo up --timeout 0` for no deadline, or see `fo status`.",
   );
 }

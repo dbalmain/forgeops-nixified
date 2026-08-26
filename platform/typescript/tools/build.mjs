@@ -31,6 +31,8 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { assertNoAnnotatedActionParameters } from "./am-source-rules.mjs";
+import { assertNoAbsentBuiltinUses } from "./engine-usage.mjs";
 import { findRuntimeBanViolations } from "./idm-runtime-bans.mjs";
 import { generateManagedTypes } from "./managed-types.mjs";
 import { GLOBAL_NAME, bundle, downlevel } from "./pipeline.mjs";
@@ -117,6 +119,19 @@ function typeCheck() {
       throw new Error("type-check failed (" + config + ")");
     }
   }
+
+  // Part of the type-check, not a separate step, and deliberately BEFORE any
+  // emission: `@babel/preset-env` runs with `useBuiltIns: false`, so a builtin
+  // Rhino lacks is not polyfilled -- it type-checks, builds, deploys, and
+  // throws inside somebody's login. tsgo cannot see that, because the pinned
+  // `lib` legitimately declares those members and TypeScript has no way to
+  // un-declare one.
+  assertNoAbsentBuiltinUses();
+
+  // The one PingAM narrowing the type system cannot hold on its own: an
+  // explicit annotation on `main`'s parameter takes `goTo` back to accepting
+  // any string, and TypeScript's method-parameter bivariance permits it.
+  assertNoAnnotatedActionParameters();
 }
 
 function entryPoints() {

@@ -179,23 +179,30 @@ and they are not the same shape. A file that imports from
 `framework/index.ts` will not compile here, and should not.
 
 They do share a `lib`, because they share an engine: both were probed on a
-running stack, 751 probes each, and differ in only two places neither program
-can reach ([spike/ENGINE-SURFACE.md](../spike/ENGINE-SURFACE.md)). So
+running stack, 765 probes each, and differ in only two places neither program
+can reach. That sharing is sound because each program is checked against its
+own engine, not because the two engines are the same object. So
 `Object.entries`, `String#padStart` and `Promise#finally` are available in
 both; `Array#flat`, `Object.hasOwn`, `String#replaceAll`, `Proxy` and
 `Reflect` are in neither, and will not compile. Nothing is polyfilled, so that
 list is the truth rather than a house style.
 
 A second class of thing compiles and then throws, and it needs a different
-answer. 234 of the 714 declarations the pinned `lib` carries are absent from
-Rhino — the typed arrays almost entirely (`Float32Array` has `get`, `set` and
-`subarray` and nothing else), plus `RegExp#flags`, `RegExp#sticky` and
-`Date#[Symbol.toPrimitive]`. They cannot be removed: `lib.es5` is one file and
-TypeScript has no way to un-declare a member. So `fo check` resolves every
-property access in both programs and fails the build on one of these, naming
-the file and line. You will not get a `TypeError` in a journey for it, but the
-error arrives from the test run rather than from the type-checker in your
-editor.
+answer. 234 of the 728 declarations the pinned `lib` carries are absent from
+PingAM's Rhino (232 from PingIDM's) — the typed arrays almost entirely
+(`Float32Array` has `get`, `set` and `subarray` and nothing else), plus
+`RegExp#flags`, `RegExp#sticky` and `Date#[Symbol.toPrimitive]`. They cannot be
+removed: `lib.es5` is one file, and declaration merging can add a member but
+never subtract one. So **`fo build` resolves every builtin reference in both
+programs and fails before it emits anything**, naming the file and line — the
+same step that runs the type-check, so the error arrives in your editor rather
+than from a later test run.
+
+That check resolves property access, element access with a literal or
+finite-union key, binding patterns, destructuring assignment and well-known
+symbol members. It cannot see `obj[key]` where `key` is a plain `string`, or a
+concrete type erased behind a structural generic; `tools/engine-usage.mjs`
+states the boundary rather than implying there isn't one.
 
 ```ts
 import { defineAmScript } from "../../framework/am.ts";
@@ -227,9 +234,18 @@ So `action` is **handed to `main`**, typed to exactly the outcomes you declared
 just above it. `action.goTo("hihg")` does not compile, and neither does
 `action.goTo(risky ? "high" : "hihg")` — which matters, because the second one
 is invisible to any check that reads the built artefact looking for quoted
-outcome names. Write `outcomes` as a literal array: spreading one in
-(`outcomes: [...names]`) is rejected, since AM needs the exits statically and a
-widened type would silently switch the checking off.
+outcome names.
+
+Write `outcomes` as a literal array. Both `outcomes: [...names]` and
+`outcomes: ["high", ...names]` are rejected: AM needs the exits statically, and
+a spread widens the outcome type to `string`, which switches every check above
+off without changing a line of `main`.
+
+And let `main`'s parameter be **inferred**. Annotating it replaces the narrowed
+type, and TypeScript accepts a wider `{ goTo(outcome: string): void }` because
+it compares method parameters bivariantly — no amount of care in `AmAction`
+prevents that. `fo build` rejects an annotated parameter instead, which is the
+only place it can be caught.
 
 PingAM also puts a bare `action` in global scope. That one is declared as
 accepting no outcome at all, so reaching for it is a compile error rather than

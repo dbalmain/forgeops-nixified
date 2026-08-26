@@ -33,10 +33,40 @@ export type AmOutcomes = readonly [string, ...string[]];
  * outcome the node does not declare dead-ends the journey in front of a real
  * user, and AM reports nothing at deploy time -- so the typo has to be a
  * compile error or it is a production incident.
+ *
+ * The narrowing here is not absolute, and the gap is worth naming. TypeScript
+ * compares METHOD parameters bivariantly even under `strictFunctionTypes`, so
+ * an author who annotates the callback parameter as `{ goTo(v: string): void }`
+ * gets the wide signature back -- and no variance trick on this interface
+ * changes that, because the bivariance comes from the annotation's own method
+ * declaration, not from ours. `tools/am-source-rules.mjs` closes it from the
+ * other side: annotating `main`'s parameter is a build failure.
  */
 export interface AmAction<Outcome extends string> {
   goTo(outcome: Outcome): void;
 }
+
+/**
+ * What `outcomes` degrades to when the literal types are lost.
+ *
+ * `outcomes: ["high", ...names]` with `names: string[]` infers
+ * `readonly ["high", ...string[]]`, whose member type is plain `string` -- and
+ * then `goTo` accepts any string at all, silently, while looking exactly like
+ * a checked call. The constraint cannot live on `outcomes` itself: a
+ * conditional type there stops being an inference site, so `Outcomes` would
+ * never be inferred. It is intersected onto the whole spec instead, which
+ * leaves inference alone and fails assignability afterwards.
+ */
+export type OutcomesMustBeLiterals<Outcomes extends AmOutcomes> =
+  string extends Outcomes[number]
+    ? {
+        /**
+         * `outcomes` has to be a literal array. Spreading a `string[]` into it
+         * loses the names, and `goTo` then accepts anything.
+         */
+        readonly __outcomesAreNotStringLiterals: never;
+      }
+    : unknown;
 
 export interface AmScriptSpec<Outcomes extends AmOutcomes> {
   /** Display name in the AM console. Must match the source file name. */
@@ -87,7 +117,7 @@ export interface AmScriptMain {
  * ```
  */
 export function defineAmScript<const Outcomes extends AmOutcomes>(
-  spec: AmScriptSpec<Outcomes>,
+  spec: AmScriptSpec<Outcomes> & OutcomesMustBeLiterals<Outcomes>,
 ): AmScriptMain {
   // `AmOutcomes` already rejects an empty literal, but the emitted JS has no
   // types and this is the check that would have caught it.
@@ -98,7 +128,9 @@ export function defineAmScript<const Outcomes extends AmOutcomes>(
     // The one place the raw global is reached for. `action` is declared with
     // no usable outcome precisely so that every other reference to it fails to
     // compile and authors go through the parameter instead.
-    spec.main(action as AmAction<Outcomes[number]>);
+    (spec as AmScriptSpec<Outcomes>).main(
+      action as AmAction<Outcomes[number]>,
+    );
   } as { (): void; definition: AmScriptDefinition };
   main.definition = {
     kind: "am-script",

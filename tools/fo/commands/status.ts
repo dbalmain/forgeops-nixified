@@ -13,23 +13,26 @@ const CONTAINER_STATE = obj({
   terminated: opt(obj({ reason: opt(str), exitCode: opt(num) })),
 });
 
+const CONTAINER_STATUS = obj({
+  name: opt(str),
+  ready: bool,
+  restartCount: num,
+  state: opt(CONTAINER_STATE),
+  lastState: opt(CONTAINER_STATE),
+});
+
 const POD_LIST = obj({
   items: arrayOf(
     obj({
       metadata: obj({ name: str }),
       status: obj({
         phase: str,
-        containerStatuses: opt(
-          arrayOf(
-            obj({
-              name: opt(str),
-              ready: bool,
-              restartCount: num,
-              state: opt(CONTAINER_STATE),
-              lastState: opt(CONTAINER_STATE),
-            }),
-          ),
-        ),
+        containerStatuses: opt(arrayOf(CONTAINER_STATUS)),
+        // Init containers are where a misconfigured volume or a bad image
+        // shows up FIRST, and leaving them undecoded meant a pod wedged in
+        // `Init:CreateContainerConfigError` reported only "phase Pending" and
+        // waited out the whole deadline.
+        initContainerStatuses: opt(arrayOf(CONTAINER_STATUS)),
       }),
     }),
   ),
@@ -37,18 +40,150 @@ const POD_LIST = obj({
 
 export type Pod = ReturnType<typeof POD_LIST>["items"][number];
 
+/**
+ * The one non-zero `kubectl` exit that honestly means "nothing deployed yet".
+ *
+ * Everything else - an expired credential, an unreachable API server, a
+ * kubeconfig pointing at a cluster that no longer exists - used to be folded
+ * into the same empty list. `fo status` then printed "nothing deployed. try:
+ * fo up" for a broken connection, and `waitReady` sat in a loop over zero pods
+ * until its deadline, because an empty namespace and an unusable cluster
+ * looked identical.
+ *
+ * An empty namespace that DOES exist exits zero with `{"items": []}`, so this
+ * only covers the window before `fo up` creates it.
+ */
+function isMissingNamespace(stderr: string): boolean {
+  return /namespaces? "[^"]*" not found/i.test(stderr);
+}
+
 export function getPods(cfg: ResolvedConfig): Pod[] {
   const r = capture(
     "kubectl",
     ["-n", cfg.namespace, "get", "pods", "-o", "json"],
     { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
   );
-  // A non-zero exit is the ordinary "nothing deployed yet" case and stays
-  // quiet. Output we cannot read is NOT that case, and used to be swallowed
-  // into the same empty list - so `fo status` would report an empty cluster
-  // and `waitReady` would wait for pods it could no longer see.
-  if (r.code !== 0) return [];
+  if (r.code !== 0) {
+    if (isMissingNamespace(r.stderr)) return [];
+    throw new Error(
+      `kubectl get pods -n ${cfg.namespace} exited ${r.code}. This is not an ` +
+        "empty namespace - the cluster could not be read, so nothing here " +
+        `knows what is running:\n${(r.stderr || r.stdout).trimEnd()}`,
+    );
+  }
   return decode(r.stdout, "kubectl get pods", POD_LIST).items;
+}
+
+/* --------------------------------------------------------------- workloads */
+
+/**
+ * Deployments, StatefulSets, DaemonSets and Jobs, with just the two numbers
+ * that say whether each one arrived.
+ *
+ * Requesting several kinds at once returns a `List` whose items each carry
+ * their own `kind`, which is what lets one decode cover all four.
+ */
+const WORKLOAD_LIST = obj({
+  items: arrayOf(
+    obj({
+      kind: str,
+      metadata: obj({ name: str }),
+      spec: opt(
+        obj({
+          replicas: opt(num),
+          completions: opt(num),
+          suspend: opt(bool),
+        }),
+      ),
+      status: opt(
+        obj({
+          readyReplicas: opt(num),
+          desiredNumberScheduled: opt(num),
+          numberReady: opt(num),
+          succeeded: opt(num),
+        }),
+      ),
+    }),
+  ),
+});
+
+export type WorkloadGap = { what: string; have: number; want: number };
+
+/**
+ * Workloads that have not produced everything they were asked for.
+ *
+ * WHY THIS EXISTS ALONGSIDE THE POD CHECK. `waitReady` used to ask only
+ * whether every pod that currently EXISTS is settled, and a Deployment that
+ * produced no pod at all - an unschedulable node selector, a quota rejection,
+ * a controller that has not reconciled yet - contributes no pod to be unready.
+ * With the rest of the stack up, `done === pods.length` held, `fo up` printed
+ * URLs and exited zero, and the missing component was discovered by using it.
+ *
+ * Counting from the workload side is what closes that: a Deployment wanting
+ * one ready replica and having none is a gap whether or not a pod exists.
+ */
+export function workloadGaps(cfg: ResolvedConfig): WorkloadGap[] {
+  const r = capture(
+    "kubectl",
+    [
+      "-n",
+      cfg.namespace,
+      "get",
+      "deployments,statefulsets,daemonsets,jobs",
+      "-o",
+      "json",
+    ],
+    { env: { KUBECONFIG: cfg.kubeconfig }, allowFailure: true },
+  );
+  if (r.code !== 0) {
+    if (isMissingNamespace(r.stderr)) return [];
+    throw new Error(
+      `kubectl get workloads -n ${cfg.namespace} exited ${r.code}:\n` +
+        (r.stderr || r.stdout).trimEnd(),
+    );
+  }
+
+  return gapsIn(decode(r.stdout, "kubectl get workloads", WORKLOAD_LIST).items);
+}
+
+type Workload = ReturnType<typeof WORKLOAD_LIST>["items"][number];
+
+/**
+ * The classification, separated from the `kubectl` call so it can be tested.
+ *
+ * The case that matters has no pod in it at all, which makes it impossible to
+ * reach through anything that starts from a pod list.
+ */
+export function gapsIn(items: Workload[]): WorkloadGap[] {
+  const gaps: WorkloadGap[] = [];
+  for (const item of items) {
+    const what = `${item.kind}/${item.metadata.name}`;
+    if (item.kind === "DaemonSet") {
+      // A DaemonSet's desired count comes from the scheduler, not the spec:
+      // zero eligible nodes is zero wanted, not a gap.
+      const want = item.status?.desiredNumberScheduled ?? 0;
+      const have = item.status?.numberReady ?? 0;
+      if (have < want) gaps.push({ what, have, want });
+    } else if (item.kind === "Job") {
+      // A suspended Job is not trying to run and must not hold up a wait.
+      if (item.spec?.suspend === true) continue;
+      const want = item.spec?.completions ?? 1;
+      const have = item.status?.succeeded ?? 0;
+      if (have < want) gaps.push({ what, have, want });
+    } else {
+      // `replicas` defaults to 1 when omitted, and `readyReplicas` is ABSENT
+      // rather than zero when nothing is ready - which is exactly the shape a
+      // Deployment that produced no pod at all has.
+      const want = item.spec?.replicas ?? 1;
+      const have = item.status?.readyReplicas ?? 0;
+      if (have < want) gaps.push({ what, have, want });
+    }
+  }
+  return gaps;
+}
+
+export function formatGap(g: WorkloadGap): string {
+  return `${g.what}: ${g.have}/${g.want} ready`;
 }
 
 /** A pod is settled when it is Running and ready, or has Succeeded (a Job). */
@@ -78,8 +213,46 @@ const TERMINAL_WAITING = new Set([
   "ErrImageNeverPull",
 ]);
 
-/** How many identical restarts before a crash loop stops being a phase. */
+/** How many restarts DURING THIS WAIT before a crash loop stops being a phase. */
 const CRASHLOOP_RESTARTS = 3;
+
+/**
+ * What each container's restart count was when the current wait began.
+ *
+ * `restartCount` is a pod's lifetime total, so judging a crash loop on it
+ * directly declared any pod that had ever restarted three times terminal the
+ * instant `fo up` looked at it - including a healthy pod restarted by a node
+ * drain last week, and including the second `fo up` after a first one that
+ * legitimately waited through PingAM's startup crashes. Snapshot the counts at
+ * the start of a wait and judge the DELTA.
+ *
+ * `fo status` passes none, which reports lifetime counts. That is the right
+ * reading for a report: it has no deadline to cut short.
+ */
+export type RestartBaseline = ReadonlyMap<string, number>;
+
+export function restartBaseline(pods: Pod[]): RestartBaseline {
+  const baseline = new Map<string, number>();
+  for (const p of pods) {
+    for (const c of allContainerStatuses(p)) {
+      baseline.set(`${p.metadata.name}/${c.name ?? ""}`, c.restartCount);
+    }
+  }
+  return baseline;
+}
+
+/**
+ * Init containers first, then app containers.
+ *
+ * Order matters: a pod stuck in `Init:ImagePullBackOff` has no app container
+ * status at all, and one whose init step failed should report the init step.
+ */
+function allContainerStatuses(p: Pod) {
+  return [
+    ...(p.status.initContainerStatuses ?? []),
+    ...(p.status.containerStatuses ?? []),
+  ];
+}
 
 export type Blocker = {
   pod: string;
@@ -91,7 +264,7 @@ export type Blocker = {
 /**
  * Why a pod is not settled, and whether waiting longer could possibly help.
  */
-export function blocker(p: Pod): Blocker | undefined {
+export function blocker(p: Pod, baseline?: RestartBaseline): Blocker | undefined {
   if (settled(p)) return undefined;
   const name = p.metadata.name;
 
@@ -99,18 +272,32 @@ export function blocker(p: Pod): Blocker | undefined {
     return { pod: name, terminal: true, summary: "phase Failed" };
   }
 
-  for (const c of p.status.containerStatuses ?? []) {
+  const initNames = new Set(
+    (p.status.initContainerStatuses ?? []).map((c) => c.name),
+  );
+  for (const c of allContainerStatuses(p)) {
     if (c.ready) continue;
+    // An init container that ran to completion reports terminated/Completed
+    // and `ready: false`; that is success, not a blocker.
+    if (
+      initNames.has(c.name) &&
+      c.state?.terminated?.exitCode === 0
+    ) {
+      continue;
+    }
+    const where = initNames.has(c.name) ? `init ${c.name ?? "?"}: ` : "";
     const reason = c.state?.waiting?.reason;
     if (reason && TERMINAL_WAITING.has(reason)) {
       const msg = c.state?.waiting?.message;
       return {
         pod: name,
         terminal: true,
-        summary: msg ? `${reason}: ${msg}` : reason,
+        summary: where + (msg ? `${reason}: ${msg}` : reason),
       };
     }
-    if (reason === "CrashLoopBackOff" && c.restartCount >= CRASHLOOP_RESTARTS) {
+    const since =
+      c.restartCount - (baseline?.get(`${name}/${c.name ?? ""}`) ?? 0);
+    if (reason === "CrashLoopBackOff" && since >= CRASHLOOP_RESTARTS) {
       const last = c.lastState?.terminated;
       const why = last?.reason
         ? `${last.reason}${last.exitCode === undefined ? "" : ` (exit ${last.exitCode})`}`
@@ -118,11 +305,15 @@ export function blocker(p: Pod): Blocker | undefined {
       return {
         pod: name,
         terminal: true,
-        summary: `CrashLoopBackOff after ${c.restartCount} restarts, last ${why}`,
+        summary:
+          where +
+          `CrashLoopBackOff after ${since} restarts` +
+          (since === c.restartCount ? "" : ` this wait (${c.restartCount} total)`) +
+          `, last ${why}`,
       };
     }
     if (reason) {
-      return { pod: name, terminal: false, summary: reason };
+      return { pod: name, terminal: false, summary: where + reason };
     }
   }
 
@@ -130,8 +321,10 @@ export function blocker(p: Pod): Blocker | undefined {
 }
 
 /** Every reason the namespace is not ready, terminal ones first. */
-export function blockers(pods: Pod[]): Blocker[] {
-  const found = pods.map(blocker).filter((b): b is Blocker => b !== undefined);
+export function blockers(pods: Pod[], baseline?: RestartBaseline): Blocker[] {
+  const found = pods
+    .map((p) => blocker(p, baseline))
+    .filter((b): b is Blocker => b !== undefined);
   return [...found].sort((a, b) => Number(b.terminal) - Number(a.terminal));
 }
 

@@ -15,7 +15,7 @@ import {
   type Drift,
   type Surface,
 } from "../engine-probe.ts";
-import type { ResolvedConfig } from "../config.ts";
+import { RELEASE, type ResolvedConfig } from "../config.ts";
 
 type SurfaceFile = {
   probedOn: string;
@@ -284,6 +284,11 @@ function record(
   const next = {
     ...surface,
     probedOn: today,
+    // Stamped from the pinned release, not carried over. Keeping the previous
+    // values dated a new measurement while attributing it to the build it was
+    // NOT taken on, which is exactly the claim the file exists to make.
+    forgeopsRelease: RELEASE.forgeops,
+    platformVersion: RELEASE.productVersion,
     am: sorted(measured.am),
     idm: sorted(measured.idm),
   };
@@ -365,6 +370,31 @@ export async function doctorEngines(
       // Half a measurement would leave the file claiming both engines were
       // probed on the same day when one of them was not answered at all.
       fail("both engines must answer before the surface can be recorded");
+      return false;
+    }
+    // ...and a measurement that answered 764 of 765 keys is also half a
+    // measurement. Recording writes what the probe returned, so a key it
+    // skipped would simply vanish from the file: the surface would shrink to
+    // whatever the run happened to cover, and the coverage test would then
+    // pass against a smaller pin. Both engines must answer EVERY key.
+    const unanswered = Object.fromEntries(
+      (["am", "idm"] as const)
+        .map((engine) => [
+          engine,
+          keys.filter(
+            (k) => (engine === "am" ? amMeasured : idmMeasured)[k] === undefined,
+          ),
+        ])
+        .filter(([, missing]) => (missing as string[]).length > 0),
+    ) as Partial<Record<"am" | "idm", string[]>>;
+    if (Object.keys(unanswered).length > 0) {
+      fail("refusing to record a partial measurement");
+      for (const [engine, missing] of Object.entries(unanswered)) {
+        detail(
+          `  ${engine}: ${missing.length} key(s) unanswered, ` +
+            `first: ${missing.slice(0, 5).join(", ")}`,
+        );
+      }
       return false;
     }
     record(cfg, surface, { am: amMeasured, idm: idmMeasured }, today());

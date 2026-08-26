@@ -8,15 +8,42 @@
 //
 // None of that can be removed from the type system. `lib.es5.d.ts` is
 // monolithic: the typed arrays arrive with `Date` and `JSON`, and TypeScript
-// has no way to un-declare an interface member. So the old gate -- "no pinned
-// lib entry may declare a builtin the engine lacks" -- is not something any
-// real lib list can satisfy, and passing it only ever meant the measurement
-// was too small to notice.
+// has no way to un-declare an interface member. Declaration merging can add a
+// member; it cannot subtract one, and redeclaring it as `never` conflicts with
+// the original rather than removing it. So the old gate -- "no pinned lib
+// entry may declare a builtin the engine lacks" -- is not something any real
+// lib list can satisfy, and passing it only ever meant the measurement was too
+// small to notice.
 //
 // The check that CAN hold is this one: nothing we compile may USE one. That
 // turns `new Float32Array(8).map(f)` from code that type-checks, builds,
 // deploys and throws in the middle of a request into a failed build, which is
 // what the lib pin was supposed to buy in the first place.
+//
+// WHAT IT PROVES, EXACTLY. Direct, statically resolvable uses of a builtin in
+// this package's own TypeScript are rejected before anything is emitted. It
+// resolves four forms:
+//
+//   obj.member            property access
+//   obj["member"]         element access with a literal or finite-union key
+//   const { member } = o  binding patterns, including nested and parameters
+//   ({ member } = o)      destructuring assignment
+//
+// and well-known symbol members (`Math[Symbol.toStringTag]`) in the element
+// access form.
+//
+// WHAT IT DOES NOT PROVE -- the honest boundary, stated so nobody reads the
+// green tick as more than it is:
+//
+//   - Dynamic access. `obj[key]` where `key` is `string` names no member the
+//     compiler can resolve, so nothing is checked.
+//   - Structural erasure. `function f<T extends { map(...): U }>(x: T)` sees a
+//     structural constraint, not `Float32Array`; the call site that supplies
+//     the typed array IS caught, but a cast or `any` in between is not.
+//   - Bundled dependency code. The program sees a dependency's declarations,
+//     never its executable JavaScript, so a builtin used inside a node_modules
+//     implementation is invisible here. This package has no runtime
+//     dependencies today, which is what keeps that boundary theoretical.
 //
 // Each program is checked against ITS OWN engine. They are nearly the same
 // Rhino, but the audit found two keys where they differ, so "the engines
@@ -86,18 +113,103 @@ function keyForSymbol(symbol, memberName, isLibFile) {
 }
 
 /**
- * A well-known symbol access (`x[Symbol.iterator]`) written in source. Rare in
- * hand-written code, but the surface records these and a missing one throws
- * the same way.
+ * The surface's spelling of a symbol's name.
+ *
+ * A well-known symbol member is `__@toStringTag@18` internally -- the trailing
+ * id is the declaration's, so it is not stable and must not reach a key. The
+ * surface writes these as `[Symbol.toStringTag]`.
  */
-function wellKnownSymbolName(node) {
-  const argument = node.argumentExpression;
-  if (argument === undefined || !ts.isPropertyAccessExpression(argument)) {
-    return undefined;
+function surfaceMemberName(symbol) {
+  const escaped = String(symbol.escapedName);
+  const wellKnown = /^__@([A-Za-z]+)@\d+$/.exec(escaped);
+  if (wellKnown) return `[Symbol.${wellKnown[1]}]`;
+  if (escaped.startsWith("__")) return undefined; // some other internal name
+  return escaped;
+}
+
+/**
+ * Property symbols an element access could be reaching.
+ *
+ * A literal key names one; a finite union of literals names each of them; a
+ * unique symbol type (`Symbol.iterator`) names the late-bound member. Anything
+ * wider -- `string`, `number`, a computed name -- resolves to nothing, which is
+ * the dynamic-access boundary the header describes.
+ */
+function elementAccessProperties(node, checker) {
+  if (node.argumentExpression === undefined) return [];
+  const receiver = checker.getTypeAtLocation(node.expression);
+  const argument = checker.getTypeAtLocation(node.argumentExpression);
+  const candidates = argument.isUnion() ? argument.types : [argument];
+
+  const properties = checker.getPropertiesOfType(receiver);
+  const found = [];
+  for (const candidate of candidates) {
+    let escaped;
+    if (candidate.isStringLiteral()) {
+      escaped = candidate.value;
+    } else if (candidate.flags & ts.TypeFlags.UniqueESSymbol) {
+      escaped = String(candidate.escapedName);
+    } else {
+      continue;
+    }
+    const property = properties.find((p) => String(p.escapedName) === escaped);
+    if (property !== undefined) found.push(property);
   }
-  if (!ts.isIdentifier(argument.expression)) return undefined;
-  if (argument.expression.text !== "Symbol") return undefined;
-  return `[Symbol.${argument.name.text}]`;
+  return found;
+}
+
+/**
+ * The property an object binding element reads.
+ *
+ * `const { map } = arr` and `const { map: renamed } = arr` both read `map` off
+ * the type of the pattern, which is the type of whatever is being destructured
+ * -- an initialiser, a parameter, or an enclosing binding element.
+ */
+function bindingElementProperty(node, checker) {
+  if (!ts.isObjectBindingPattern(node.parent)) return undefined;
+  const name = node.propertyName ?? node.name;
+  if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) return undefined;
+  const source = checker.getTypeAtLocation(node.parent);
+  return checker.getPropertyOfType(source, name.text);
+}
+
+/**
+ * Whether this object-literal member really is a destructuring TARGET.
+ *
+ * `getPropertySymbolOfDestructuringAssignment` asserts rather than returning
+ * undefined -- handed a member of an ordinary object literal it throws
+ * "Invalid cast" from deep inside the checker -- so the caller has to know
+ * before it asks. Walks out through nested patterns to the `=` (or the
+ * `for (... of ...)` binding) that makes the whole literal an assignment.
+ */
+function isDestructuringTarget(member) {
+  let node = member.parent; // the ObjectLiteralExpression
+  for (;;) {
+    const parent = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isParenthesizedExpression(parent)) {
+      node = parent;
+    } else if (ts.isBinaryExpression(parent)) {
+      return (
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.left === node
+      );
+    } else if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) {
+      return parent.initializer === node;
+    } else if (
+      ts.isPropertyAssignment(parent) ||
+      ts.isShorthandPropertyAssignment(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent)
+    ) {
+      // A nested pattern: keep climbing towards the outermost literal.
+      node = parent;
+    } else {
+      return false;
+    }
+  }
 }
 
 function loadProgram(tsconfigName) {
@@ -150,12 +262,18 @@ export function checkEngineUsage(tsconfigName, engineSurface) {
   }
 
   const absent = (key) => engineSurface[key] === false;
+  const seen = new Set();
 
   function report(node, key) {
     const sourceFile = node.getSourceFile();
     const { line, character } = sourceFile.getLineAndCharacterOfPosition(
       node.getStart(sourceFile),
     );
+    // One finding per position and key: a nested binding element is visited
+    // once, but a destructuring assignment target is reachable two ways.
+    const at = `${sourceFile.fileName}:${line}:${character}:${key}`;
+    if (seen.has(at)) return;
+    seen.add(at);
     findings.push({
       file: relative(projectRoot, sourceFile.fileName),
       line: line + 1,
@@ -164,24 +282,38 @@ export function checkEngineUsage(tsconfigName, engineSurface) {
     });
   }
 
+  /** Report `symbol` if it is a builtin this engine lacks. */
+  function consider(node, symbol, memberName) {
+    if (symbol === undefined) return;
+    const name = memberName ?? surfaceMemberName(symbol);
+    if (name === undefined) return;
+    const key = keyForSymbol(symbol, name, isLibFile);
+    if (key !== undefined && absent(key)) report(node, key);
+  }
+
   for (const sourceFile of program.getSourceFiles()) {
     if (sourceFile.isDeclarationFile) continue;
 
     const visit = (node) => {
       if (ts.isPropertyAccessExpression(node)) {
-        const symbol = checker.getSymbolAtLocation(node.name);
-        if (symbol) {
-          const key = keyForSymbol(symbol, node.name.text, isLibFile);
-          if (key !== undefined && absent(key)) report(node, key);
-        }
+        consider(node, checker.getSymbolAtLocation(node.name), node.name.text);
       } else if (ts.isElementAccessExpression(node)) {
-        const member = wellKnownSymbolName(node);
-        if (member !== undefined) {
-          const symbol = checker.getSymbolAtLocation(node.argumentExpression);
-          if (symbol) {
-            const key = keyForSymbol(symbol, member, isLibFile);
-            if (key !== undefined && absent(key)) report(node, key);
-          }
+        for (const property of elementAccessProperties(node, checker)) {
+          consider(node, property, undefined);
+        }
+      } else if (ts.isBindingElement(node)) {
+        consider(node, bindingElementProperty(node, checker), undefined);
+      } else if (
+        ts.isShorthandPropertyAssignment(node) ||
+        ts.isPropertyAssignment(node)
+      ) {
+        // `({ map } = arr)` and `({ map: renamed } = arr)`.
+        if (isDestructuringTarget(node)) {
+          consider(
+            node,
+            checker.getPropertySymbolOfDestructuringAssignment(node.name),
+            undefined,
+          );
         }
       } else if (ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node.parent)) {
         // A bare global: `Float32Array`, `Proxy`. Skipped when it is the
@@ -212,4 +344,45 @@ export function formatFindings(tsconfigName, engine, findings, probedOn) {
         `and throws at runtime.`,
     )
     .join("\n");
+}
+
+/**
+ * The programs whose output actually runs on a Ping script engine, and which
+ * engine each one lands on.
+ *
+ * THE list, not a copy of it: `tools/build.mjs` and `tests/engine-lib.test.mjs`
+ * both read this. `tsconfig.tests.json` is deliberately absent -- it runs on
+ * node and is entitled to a modern lib.
+ */
+export const RUNTIME_PROGRAMS = [
+  { tsconfig: "tsconfig.json", engine: "idm" },
+  { tsconfig: "tsconfig.am.json", engine: "am" },
+];
+
+/**
+ * Throw if any runtime program uses a builtin its engine lacks.
+ *
+ * Called from the type-check step of `tools/build.mjs`, BEFORE anything is
+ * emitted. It lived only in a test once, and `npm run check` runs the build
+ * before the tests -- so an absent builtin was written to
+ * `platform/idm/script/` and the command failed afterwards, leaving output
+ * that `fo sync` would happily push. A gate that fires after emission is not a
+ * gate.
+ */
+export function assertNoAbsentBuiltinUses() {
+  const surface = JSON.parse(
+    readFileSync(join(projectRoot, "framework", "engine-surface.json"), "utf8"),
+  );
+  const messages = [];
+  for (const { tsconfig, engine } of RUNTIME_PROGRAMS) {
+    const findings = checkEngineUsage(tsconfig, surface[engine]);
+    if (findings.length > 0) {
+      messages.push(
+        `${tsconfig} uses ${findings.length} builtin(s) this engine does not ` +
+          "have:\n" +
+          formatFindings(tsconfig, engine, findings, surface.probedOn),
+      );
+    }
+  }
+  if (messages.length > 0) throw new Error(messages.join("\n\n"));
 }

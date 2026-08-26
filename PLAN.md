@@ -1174,10 +1174,10 @@ What replaced it:
 
 - **The required set is derived from the other side.**
   `tools/engine-coverage.mjs` walks the TypeScript lib files the tsconfigs
-  name and enumerates every declaration that carries a runtime value: **714**,
+  name and enumerates every declaration that carries a runtime value: **728**,
   against 97 recorded. A test fails on any that were never probed, so the
   measurement can no longer be a subset of the lib by omission.
-- **234 of the 714 are absent.** Nearly all of the typed arrays — Rhino's
+- **234 of the 728 are absent** on PingAM, 232 on PingIDM. Nearly all of the typed arrays — Rhino's
   `Float32Array.prototype` has `get`, `set` and `subarray` and none of the
   `%TypedArray%` suite — plus `RegExp#flags`, `RegExp#sticky`, `RegExp#unicode`,
   `Date#[Symbol.toPrimitive]`, `Function#[Symbol.hasInstance]` and the
@@ -1189,7 +1189,7 @@ What replaced it:
   because the measurement was too small to notice. It is replaced by a
   **use-site** check that resolves every property access in both programs
   through the compiler and fails the build on a use of an absent builtin.
-- **The engines are not identical.** At 97 probes they agreed; at 751 they
+- **The engines are not identical.** At 97 probes they agreed; at 765 they
   differ on `Math[Symbol.toStringTag]` and `JSON[Symbol.toStringTag]`, present
   on IDM and absent on AM. The shared `lib` survives because each program is
   now checked against **its own** engine.
@@ -1200,9 +1200,9 @@ What replaced it:
   the spread case was a literal `[].concat(...)` — and would have stayed green
   through a preset-env change that started emitting `_toConsumableArray`.
 - **The measurement is frozen to what it covered.**
-  `framework/engine-coverage.json` records the TypeScript version and a digest
-  per lib file; a bump fails the build with "re-probe" rather than silently
-  widening the pin.
+  `framework/engine-coverage.json` records both compiler versions and a digest
+  per lib file for each; a bump fails the build with "re-probe" rather than
+  silently widening the pin.
 
 **Two measurement bugs found by expanding the coverage**, both of which would
 have gone into the record as fact:
@@ -1223,6 +1223,76 @@ have gone into the record as fact:
 
 `fo doctor --engines --record` writes a fresh measurement back, and refuses to
 write a partial one.
+
+### Phase 6.3 — closing what the round-3 review found — **DONE**
+
+Codex reviewed 6.2 and came back "not closed yet", with seven ranked defects.
+Four were verified independently before being acted on; all seven are fixed.
+
+- **The use-site check was not on the build path.** It lived only in a test,
+  and `npm run check` runs the build *before* the tests — so an absent builtin
+  was emitted into `platform/idm/script/` and the command failed afterwards,
+  leaving output `fo sync` would push. It is part of `tools/build.mjs`'s
+  type-check step now, verified by making a real endpoint read
+  `new Float32Array(2)["reduce"]` and watching the build refuse before writing.
+  This was the same build/check split fixed one commit earlier in `c979da8`,
+  recreated.
+- **The check missed four of the five forms it implied it covered.**
+  `arr["map"]`, `arr[key]` for a finite union, `const { map } = arr` and
+  `({ map } = arr)` were all invisible, and `Math[Symbol.toStringTag]` resolved
+  to a `Symbol` holder rather than a `Math` one — so the one member PingAM is
+  known to lack was reachable and reported clean. The fixture now carries one
+  case per form. What it still cannot see — dynamic keys, structural erasure,
+  dependency implementation code — is stated in the file rather than implied
+  away.
+- **The census hashed the wrong lib files.** `fo build` type-checks with
+  `tsgo`; the manifest digested the `typescript` package's copies, which the
+  emission gate never reads. All twelve differ byte for byte. Both are frozen
+  now, the required set is their union, and a test fails if their derived
+  surfaces stop agreeing.
+- **`length` and `name` were excluded from the census**, so `Function#name`
+  was never probed while the count claimed to be exhaustive. Restoring them
+  took 714 to 728; all fourteen turned out to be present on both engines, which
+  is the answer you only get by asking.
+- **`goTo` could still be widened.** `outcomes: ["high", ...names]` satisfies
+  the non-empty tuple and collapses the union to `string`, so `goTo("hihg")`
+  compiled. Rejected now by a `string extends Outcomes[number]` test
+  intersected onto the spec — it cannot live on `outcomes` itself, because a
+  conditional type there stops being an inference site.
+- **…and annotating the callback parameter bypassed it entirely.** TypeScript
+  compares method parameters bivariantly, so `{ goTo(o: string): void }` is an
+  accepted stand-in and no variance annotation on `AmAction` refuses it — the
+  bivariance comes from the annotation's own declaration. Making `goTo` a
+  function-typed property was tried and changes nothing. It is closed from the
+  source instead: `tools/am-source-rules.mjs` fails the build on an annotated
+  `main` parameter.
+- **`--record` could still write a partial measurement.** It checked that both
+  engines answered, not that they answered every key, so a run that skipped one
+  would have shrunk the file to whatever it covered. It also carried the old
+  `forgeopsRelease` forward, dating a new measurement to the build it was not
+  taken on.
+- **Readiness could still report success for a missing workload.** `waitReady`
+  asked only whether every pod that *exists* is settled, and a Deployment that
+  produced no pod at all contributes nothing unready — so `fo up` printed URLs
+  and exited zero for a stack missing a component. It counts from the workload
+  side too now. Alongside: `getPods` turned every non-zero `kubectl` exit into
+  an empty namespace (an expired credential read as "nothing deployed"), init
+  container states were never decoded, and the crash-loop threshold used the
+  *lifetime* restart count, so a pod that had ever restarted three times was
+  declared terminal on the first tick of the next `fo up`.
+- **A decision, not a probe: `async`, `await`, generators and native
+  subclassing are banned.** An `async` function is assignable to a `() => void`
+  handler, so it compiles — and an endpoint's response body is the script's
+  completion value, an AM node's outcome is read when `main` returns, and Rhino
+  has no event loop here to settle a Promise. Babel's `_wrapNativeSuper` needs
+  `Reflect`, which is absent, so `instanceof` silently breaks for *any* native
+  superclass and not just `Error`. The native list is derived from the pinned
+  lib so it cannot go stale.
+
+The honest claim, which the code now states rather than implies: *direct,
+statically resolvable builtin uses in this package's TypeScript are rejected
+before emission; dynamic access, structural erasure and bundled dependency
+implementations are outside the proof.*
 
 ### Bug found on the way: `fo amster` failed on a first install
 

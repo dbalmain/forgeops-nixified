@@ -1,7 +1,28 @@
 # What the Ping script engines actually provide
 
-`platform/typescript/framework/engine-surface.json` is the data. This is how
-it was obtained and what it settles.
+`platform/typescript/framework/engine-surface.json` is the data. This is the
+**original spike**: how the first measurement was obtained, the traps it hit,
+and what it settled at the time.
+
+> **Superseded in part.** The audit was retaken at a much larger scale after
+> the first version was found to be circular — it generated its probes from the
+> file it was verifying, so it could only ever confirm the 97 keys somebody had
+> thought of. Reading the required set out of the lib `.d.ts` files instead put
+> the count at **728**, and the numbers and mechanisms below moved with it:
+>
+> | This document says | Current |
+> | --- | --- |
+> | 95 shared probes, engines identical | **765** each; they differ on `Math`/`JSON` `Symbol.toStringTag` |
+> | the pinned `lib` was correct | the pin is sound but **wider than the engine** — 234 declarations are absent and cannot be removed |
+> | `tests/engine-lib.test.mjs` fails on a lib entry that declares an absent builtin | unsatisfiable, and replaced: **`fo build` fails on a USE**, before emission |
+> | six hand-written `emit:*` checks | 13 cases generated through the real esbuild+Babel pipeline |
+> | existence tested with `typeof` | `in` on the holder plus instance sampling — `typeof Map.prototype.size` *throws* |
+>
+> The current method lives in `platform/typescript/tools/engine-coverage.mjs`
+> (what the lib promises), `tools/engine-usage.mjs` (the use-site gate and its
+> stated boundary) and `tools/emit-probe.mjs` (the behavioural half). The
+> narrative of why it changed is in `PLAN.md`, phase 6.2. What follows is left
+> as written, because the traps in it are the part still worth reading.
 
 ## Why this exists
 
@@ -49,11 +70,28 @@ probes did drift this way — they had reached 97 checks against 95 — which is
 why they are gone rather than kept as a second copy of the list. They are in
 git history if the original wording of a check is ever needed.
 
+> This is the circularity. Generating the probes from the file makes the two
+> consistent, and consistency is not coverage: a builtin nobody added to the
+> JSON is never probed, never reported, and silently assumed present. The
+> required set is now derived from the lib `.d.ts` files instead, and a key the
+> lib promises but the measurement lacks is a test failure.
+
 Only the six `emit:*` entries are still hand-written, because they assert that
 downlevelled output *runs* rather than that a name exists.
 
+> Also superseded. Hand-written ES5 tests a guess about the pipeline, not the
+> pipeline: the "spread" case was a literal `[].concat(...)` when Babel emits
+> `_toConsumableArray`. `tools/emit-corpus.ts` is now compiled through the real
+> path and the committed result is what the engines run.
+
 Existence is tested with `typeof` and with bracket access on the holder — never
 by calling the thing, which would abort the probe at its first absence.
+
+> `typeof` alone was wrong, and it took a wider measurement to find out.
+> `typeof Map.prototype.size` **throws** on this Rhino (`Method "get size"
+> called on incompatible object`), so `Map#size`, `Set#size` and `Error#stack`
+> were all recorded absent while being plainly present. The probe now uses
+> `in` on the holder and falls back to sampling a real instance.
 
 ## Two traps this hit, both worth knowing
 
@@ -74,10 +112,22 @@ inspecting the engine for them.
 
 Both engines are the **same Rhino build** — `java`, `Packages` and
 `JavaImporter` are present, Nashorn's `Java` is absent — and they **agreed on
-all 95 shared probes**. That is what makes one shared `lib` sound, and the
-test `tests/engine-lib.test.mjs` fails if they ever diverge.
+all 95 shared probes**.
+
+> At 765 probes they do not. PingIDM's Rhino carries `Symbol.toStringTag` on
+> `Math` and `JSON`; PingAM's does not. Neither is reachable from anything
+> worth writing, so the shared `lib` survives — but it survives because each
+> program is checked against **its own** engine, not because the engines are
+> the same object. "They agree" was an artefact of measuring 95 things.
 
 ### The pinned `lib` was correct, and too narrow
+
+> Correct in the sense that every entry pinned is genuinely present. Not in the
+> sense that everything the pin *declares* is present: `lib.es5` is monolithic,
+> and it brings in the whole typed-array suite, `RegExp#flags` and
+> `Date#[Symbol.toPrimitive]`, none of which this Rhino has. 234 of the 728
+> declarations are absent. That cannot be fixed by choosing better entries, so
+> the gate moved to the use site.
 
 Every entry already pinned is genuinely present: ES5, ES2015.Core,
 ES2015.Collection, ES2015.Iterable (`Symbol.iterator` is on `Array.prototype`
@@ -122,6 +172,13 @@ reading TypeScript's own lib `.d.ts` sources — so adding a lib entry that
 declares an absent builtin fails the build. Both failure modes were exercised
 before the test was committed: adding `ES2019.Array` (which declares `flat`)
 fails it, and so does declaring `Object.hasOwn` in `engine-lib.d.ts`.
+
+> The first of those two is not a check any real lib list can satisfy, and it
+> only ever passed because the measurement was small enough not to notice.
+> `fo build` now fails on a **use** of an absent builtin instead, before
+> anything is emitted; the `engine-lib.d.ts` check is unchanged and still
+> exercised. The discriminating fixture is committed at
+> `platform/typescript/tests/fixtures/uses-absent-builtins.ts`.
 
 Run `fo doctor --engines` after a ForgeOps upgrade. The engine can change
 underneath this file, and nothing in the build would notice: every gate would

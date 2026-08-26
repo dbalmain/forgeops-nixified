@@ -23,12 +23,43 @@
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+
+/**
+ * The two sets of lib .d.ts files in this package, and why both matter.
+ *
+ * `tsgo` is what `fo build` type-checks with, so ITS declarations are the ones
+ * that decide whether a use of a builtin reaches emission. The `typescript`
+ * package is here for its compiler API -- `engine-usage.mjs` needs a program
+ * and a checker, and tsgo does not expose one -- and it ships its own copies of
+ * the same libs.
+ *
+ * The two are not the same bytes. Every one of the twelve files this project
+ * pins differs between TypeScript 5.9 and the 7.0 native preview. Their
+ * DERIVED surfaces agree today, which `tests/engine-lib.test.mjs` asserts, but
+ * nothing about the next preview bump guarantees that. So both are digested,
+ * and the required set is the union: a builtin either compiler admits has to
+ * have been probed.
+ */
+export const TSGO_LIB_DIR = join(
+  dirname(
+    require.resolve(
+      `@typescript/native-preview-${process.platform}-${process.arch}/package.json`,
+    ),
+  ),
+  "lib",
+);
+export const TS_LIB_DIR = join(
+  dirname(require.resolve("typescript/package.json")),
+  "lib",
+);
 
 /**
  * Interfaces that describe a SHAPE rather than a runtime object.
@@ -56,19 +87,18 @@ const STRUCTURAL = new Set([
 ]);
 
 /**
- * Members that exist on every object or carry no engine capability, so
- * probing them says nothing about the pin.
+ * Members that exist on every object, so probing them says nothing about the
+ * pin.
+ *
+ * `length` and `name` used to be here too, and that was wrong: `Function#name`
+ * is a real runtime declaration a script can read, and it is exactly the kind
+ * of thing an old Rhino might not have. Dropping them meant the census claimed
+ * to be exhaustive while silently excluding a member per holder.
  */
-const UNINTERESTING = new Set(["prototype", "constructor", "length", "name"]);
+const UNINTERESTING = new Set(["prototype", "constructor"]);
 
-function libFile(entry) {
-  return join(
-    projectRoot,
-    "node_modules",
-    "typescript",
-    "lib",
-    `lib.${entry.toLowerCase()}.d.ts`,
-  );
+function libFile(entry, libDir) {
+  return join(libDir, `lib.${entry.toLowerCase()}.d.ts`);
 }
 
 /** Strip comments so JSON.parse accepts a tsconfig. */
@@ -97,12 +127,12 @@ function memberName(member, sourceFile) {
  * global binding, `Holder.member` for a static, `Holder#member` for a
  * prototype member.
  */
-export function requiredKeys(libEntries) {
+export function requiredKeys(libEntries, libDir = TSGO_LIB_DIR) {
   const globalType = new Map(); // global name -> the interface it is typed as
   const interfaces = new Map(); // interface name -> Set of member names
 
   for (const entry of libEntries) {
-    const file = libFile(entry);
+    const file = libFile(entry, libDir);
     const sourceFile = ts.createSourceFile(
       file,
       readFileSync(file, "utf8"),
@@ -135,6 +165,7 @@ export function requiredKeys(libEntries) {
   }
 
   const keys = new Set();
+  const constructors = new Set();
   for (const [name, type] of globalType) {
     keys.add(`g:${name}`);
 
@@ -144,6 +175,7 @@ export function requiredKeys(libEntries) {
     // prototype members.
     const constructorInterface = `${name}Constructor`;
     if (type === constructorInterface) {
+      constructors.add(name);
       for (const member of interfaces.get(constructorInterface) ?? []) {
         if (!UNINTERESTING.has(member)) keys.add(`${name}.${member}`);
       }
@@ -167,7 +199,33 @@ export function requiredKeys(libEntries) {
       !(name.endsWith("Constructor") && globalType.has(name.slice(0, -11))),
   );
 
-  return { keys: [...keys].sort(), unclassified: unclassified.sort() };
+  return {
+    keys: [...keys].sort(),
+    constructors: [...constructors].sort(),
+    unclassified: unclassified.sort(),
+  };
+}
+
+/**
+ * The globals that are CONSTRUCTORS: `declare var X: XConstructor`.
+ *
+ * Babel lowers `class Mine extends X` to `_wrapNativeSuper(X)`, which reaches
+ * for `Reflect.construct`. `Reflect` is absent from this Rhino, so every one
+ * of these is a superclass whose prototype chain silently does not survive the
+ * downlevel -- `instanceof Mine` is false while `instanceof X` is true. That
+ * was found for `Error` and banned for `Error`; it is a property of the
+ * lowering, not of `Error`.
+ *
+ * Derived from the lib rather than listed, so a lib change cannot leave a new
+ * native unbanned. Both compilers, because either one admitting it is enough.
+ */
+export function constructorGlobals(libEntries) {
+  return [
+    ...new Set([
+      ...requiredKeys(libEntries, TSGO_LIB_DIR).constructors,
+      ...requiredKeys(libEntries, TS_LIB_DIR).constructors,
+    ]),
+  ].sort();
 }
 
 /**
@@ -177,19 +235,44 @@ export function requiredKeys(libEntries) {
  * ships a new member in one of these files, the measurement no longer covers
  * the lib and has to be retaken - this is what makes that loud.
  */
-export function libDigests(libEntries) {
+export function libDigests(libEntries, libDir) {
   const digests = {};
   for (const entry of libEntries) {
     digests[entry] = createHash("sha256")
-      .update(readFileSync(libFile(entry)))
+      .update(readFileSync(libFile(entry, libDir)))
       .digest("hex")
       .slice(0, 16);
   }
   return digests;
 }
 
+/**
+ * Every key EITHER compiler's libs promise.
+ *
+ * The union rather than tsgo's set alone, so that a native-preview bump which
+ * adds a member cannot leave it unprobed while the equality test is being
+ * chased down. Seeding and coverage both work from this.
+ */
+export function requiredKeysUnion(libEntries) {
+  const tsgo = requiredKeys(libEntries, TSGO_LIB_DIR);
+  const tsc = requiredKeys(libEntries, TS_LIB_DIR);
+  return {
+    keys: [...new Set([...tsgo.keys, ...tsc.keys])].sort(),
+    constructors: [
+      ...new Set([...tsgo.constructors, ...tsc.constructors]),
+    ].sort(),
+    unclassified: [
+      ...new Set([...tsgo.unclassified, ...tsc.unclassified]),
+    ].sort(),
+  };
+}
+
 export function typescriptVersion() {
   return ts.version;
+}
+
+export function tsgoVersion() {
+  return require("@typescript/native-preview/package.json").version;
 }
 
 /* --------------------------------------------------------------------- CLI */
@@ -209,7 +292,7 @@ export function typescriptVersion() {
 async function main() {
   const { writeFileSync } = await import("node:fs");
   const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
-  const { keys, unclassified } = requiredKeys(libs);
+  const { keys, unclassified } = requiredKeysUnion(libs);
   if (unclassified.length > 0) {
     throw new Error(
       "interfaces this tool cannot classify as runtime-bearing or " +
@@ -246,7 +329,7 @@ async function main() {
 async function writeManifest() {
   const { writeFileSync } = await import("node:fs");
   const libs = readTsconfig("tsconfig.json").compilerOptions.lib;
-  const { keys } = requiredKeys(libs);
+  const { keys } = requiredKeysUnion(libs);
   const path = join(projectRoot, "framework", "engine-coverage.json");
   const existing = JSON.parse(readFileSync(path, "utf8"));
   writeFileSync(
@@ -255,8 +338,15 @@ async function writeManifest() {
       {
         "//": existing["//"],
         typescript: typescriptVersion(),
+        tsgo: tsgoVersion(),
         requiredKeys: keys.length,
-        lib: libDigests(libs),
+        // Both, because the build type-checks with one and this analysis runs
+        // on the other. Freezing only the compiler API's copies described lib
+        // files the emission gate never reads.
+        lib: {
+          tsgo: libDigests(libs, TSGO_LIB_DIR),
+          typescript: libDigests(libs, TS_LIB_DIR),
+        },
       },
       null,
       2,
@@ -264,8 +354,8 @@ async function writeManifest() {
     "utf8",
   );
   process.stdout.write(
-    `manifest frozen: TypeScript ${typescriptVersion()}, ${keys.length} keys, ` +
-      `${libs.length} lib files.\n`,
+    `manifest frozen: tsgo ${tsgoVersion()}, TypeScript ${typescriptVersion()}, ` +
+      `${keys.length} keys, ${libs.length} lib files each.\n`,
   );
 }
 

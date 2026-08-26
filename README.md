@@ -194,28 +194,47 @@ What the types buy you: handler parameters are inferred from the validators, so
 changing `v.integer({ max: 100 })` breaks the handler that relied on it at
 compile time. The `lib` is pinned to what the script engine actually provides —
 no `Proxy`, no `Reflect`, no `Array#flat` — so runtime-impossible code fails to
-type-check. And you never subclass `Error`: `Reflect` is absent, which makes
-Babel's `_wrapNativeSuper` break `instanceof` silently. Use the tagged faults
-(`badRequest`, `notFound`, …) instead; a lint rule rejects the alternative.
+type-check. And you never subclass a native — `Error`, `Map`, `Array`, any of
+them: `Reflect` is absent, which makes Babel's `_wrapNativeSuper` break
+`instanceof` silently. Use the tagged faults (`badRequest`, `notFound`, …)
+instead, and compose rather than extend. `async`, `await` and generators are
+banned too: an endpoint's response body is the script's completion value and an
+AM node's outcome is read when `main` returns, so an unawaited Promise is all
+the host would ever see — and Rhino has no event loop here to settle it. Lint
+rules reject all of it, with the native list derived from the pinned `lib`
+rather than written out.
 
 That `lib` is not guesswork, and the proof is exhaustive rather than
-representative. `tools/engine-coverage.mjs` reads the TypeScript lib files the
-tsconfigs name and enumerates **every** declaration that carries a runtime
-value — 714 of them — and `fo doctor --engines` probes all 714 on both engines,
-plus a behavioural corpus and four engine markers: 751 probes each. A test
-fails if the pin promises something the probe never checked, which is what
-stops the measurement quietly describing a subset of the lib.
+representative. `tools/engine-coverage.mjs` reads the lib files the tsconfigs
+name and enumerates **every** declaration that carries a runtime value — 728 of
+them — and `fo doctor --engines` probes all 728 on both engines, plus 13
+behavioural cases and 24 deliberate out-of-pin checks (`Proxy`, `Object.hasOwn`,
+Rhino's `java`/`Packages`): **765 probes each**. A test fails if the pin
+promises something the probe never checked, which is what stops the measurement
+quietly describing a subset of the lib. Both compilers in this package are
+covered — `fo build` type-checks with `tsgo`, this analysis uses the
+`typescript` package's compiler API, and they ship different copies of the same
+lib files, so the manifest digests both and a test fails if their derived
+surfaces stop agreeing.
 
-**234 of those 714 are not there.** Almost all of the typed arrays
-(`Float32Array#map` and its siblings — Rhino ships only `get`, `set` and
-`subarray`), plus `RegExp#flags`, `RegExp#sticky`, `Date#[Symbol.toPrimitive]`
-and a dozen more. None of it can be removed from the type system: `lib.es5` is
-monolithic and TypeScript cannot un-declare an interface member. So the line is
-held at the **use site** instead — a test resolves every property access in
-both programs through the compiler and fails the build if it reaches a builtin
-the engine lacks. `new Float32Array(8).map(f)` is a build failure, not a
-`TypeError` in the middle of somebody's login. Nothing is polyfilled
-(`useBuiltIns: false`), so there is no third option.
+**234 of those 728 are not there** on PingAM, 232 on PingIDM. Almost all of the
+typed arrays (`Float32Array#map` and its siblings — Rhino ships only `get`,
+`set` and `subarray`), plus `RegExp#flags`, `RegExp#sticky`,
+`Date#[Symbol.toPrimitive]` and a dozen more. None of it can be removed from
+the type system: `lib.es5` is monolithic, and declaration merging can add a
+member but never subtract one. So the line is held at the **use site** instead
+— `fo build` resolves every builtin reference in both programs through the
+compiler, before it emits anything, and fails if one is absent.
+`new Float32Array(8).map(f)` is a build failure, not a `TypeError` in the
+middle of somebody's login. Nothing is polyfilled (`useBuiltIns: false`), so
+there is no third option.
+
+What that check proves, exactly: property access, element access with a literal
+or finite-union key, binding patterns and destructuring assignment, plus
+well-known symbol members. What it does not: `obj[key]` where `key` is a plain
+`string`, a structural generic that has erased the concrete type, and code
+inside a bundled dependency (there are none today). The boundary is stated in
+`tools/engine-usage.mjs` rather than papered over.
 
 The behavioural half is generated, not written: `tools/emit-corpus.ts` goes
 through the same esbuild-and-Babel pipeline an endpoint does, and the committed
@@ -225,9 +244,9 @@ real helpers — `_toConsumableArray`, `_objectSpread`, `_createForOfIteratorHel
 — rather than a hand-written impression of them.
 
 The data is in `framework/engine-surface.json`, what it covers is frozen in
-`framework/engine-coverage.json` (a digest per lib file, so a TypeScript bump
-forces a re-measure), and the method is in
-[spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md). `fo doctor --engines`
+`framework/engine-coverage.json` (a digest per lib file, for both compilers, so
+a bump to either forces a re-measure), and the original spike that started it
+is in [spike/ENGINE-SURFACE.md](spike/ENGINE-SURFACE.md). `fo doctor --engines`
 re-takes the measurement and exits non-zero if the engine has moved — worth
 running after a ForgeOps upgrade, which is the one thing that can invalidate
 the pin without touching a line of this repo. `--record` writes what it found
@@ -236,7 +255,7 @@ back.
 PingAM scripts are a **separate TypeScript program** (`tsconfig.am.json`),
 because AM and IDM declare colliding globals — both have a `logger`, and they
 are not the same shape. They share a `lib`, and at 97 probes they looked
-identical; at 751 they differ in two places (`Math` and `JSON` carry
+identical; at 765 they differ in two places (`Math` and `JSON` carry
 `Symbol.toStringTag` on IDM and not on AM). Neither is reachable from anything
 worth writing, and the shared lib stays sound because each program is checked
 against its own engine — not because the engines are the same object.
