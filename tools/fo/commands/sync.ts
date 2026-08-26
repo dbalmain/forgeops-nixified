@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { capture } from "../lib/proc.ts";
 import { kubeEnv, podName, q } from "../lib/k8s.ts";
-import { detail, ok, warn } from "../lib/ui.ts";
+import { detail, ok } from "../lib/ui.ts";
 import type { ResolvedConfig } from "../config.ts";
 
 /**

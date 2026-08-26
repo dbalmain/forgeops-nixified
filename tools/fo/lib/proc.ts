@@ -23,9 +23,15 @@ export type RunOptions = {
    *   - A NAMED GET for something that may not exist wants
    *     `--ignore-not-found` (see `getOptional` in lib/k8s.ts), which makes
    *     absence exit zero and leaves real failures failing.
-   *   - Only genuinely BEST-EFFORT work belongs here: fetching a crash log to
-   *     print, tearing down a probe, a capability sniff. If anything downstream
-   *     believes the answer, this is the wrong tool.
+   *   - BEST-EFFORT work belongs here: fetching a crash log to print, tearing
+   *     down a probe, a capability sniff. Nothing downstream believes the
+   *     answer.
+   *   - So does EXPLICIT CLASSIFICATION -- taking the result back and deciding
+   *     from `code`/`stderr` which failure this is. `clusterExists` does that
+   *     (k3d says "no clusters" and "Docker is unreachable" with the same exit
+   *     code, so only the message separates them) and so does `getPods`. What
+   *     is NOT allowed is taking the result and ignoring it, which is how all
+   *     three defects above happened.
    */
   allowFailure?: boolean;
   cwd?: string;

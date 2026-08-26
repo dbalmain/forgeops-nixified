@@ -1,4 +1,3 @@
-import { capture } from "../lib/proc.ts";
 import { getOptional } from "../lib/k8s.ts";
 import { logsUrl } from "../logstack.ts";
 import { bold, dim, heading, table } from "../lib/ui.ts";
