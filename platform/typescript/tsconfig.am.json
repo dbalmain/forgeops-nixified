@@ -40,7 +40,8 @@
     "framework/am.ts",
     "framework/am-globals.d.ts",
     "framework/engine-lib.d.ts",
-    "src/scripts/**/*"
+    "src/scripts/**/*",
+    "tests/am-typing.ts"
   ],
   "exclude": [
     "node_modules",

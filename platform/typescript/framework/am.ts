@@ -15,22 +15,55 @@
  */
 export type AmScriptContext = "SCRIPTED_DECISION_NODE";
 
-export interface AmScriptSpec {
+/**
+ * The declared exits of a scripted decision node -- at least one, and written
+ * as a literal so the type system knows their names.
+ *
+ * Spreading an array in (`outcomes: [...names]`) is rejected on purpose: AM
+ * needs the exits to draw the node in the journey editor, so they have to be
+ * knowable without running anything.
+ */
+export type AmOutcomes = readonly [string, ...string[]];
+
+/**
+ * How a scripted decision node says where to go next, narrowed to the outcomes
+ * the script declares.
+ *
+ * `main` is HANDED one of these. That is the whole point: `goTo` naming an
+ * outcome the node does not declare dead-ends the journey in front of a real
+ * user, and AM reports nothing at deploy time -- so the typo has to be a
+ * compile error or it is a production incident.
+ */
+export interface AmAction<Outcome extends string> {
+  goTo(outcome: Outcome): void;
+}
+
+export interface AmScriptSpec<Outcomes extends AmOutcomes> {
   /** Display name in the AM console. Must match the source file name. */
   name: string;
   context: AmScriptContext;
   description?: string;
   /**
    * The declared outcomes of a scripted decision node. AM needs these to draw
-   * the node's exits in the journey editor, and a `goTo` naming an outcome not
-   * listed here dead-ends at runtime.
+   * the node's exits in the journey editor, and they are what `goTo` is
+   * checked against.
    */
-  outcomes: readonly string[];
-  main: () => void;
+  outcomes: Outcomes;
+  main: (action: AmAction<Outcomes[number]>) => void;
 }
 
-export interface AmScriptDefinition extends AmScriptSpec {
+/**
+ * What `fo build` writes into the amster entity: the spec's metadata, without
+ * the closure. Deliberately not `AmScriptSpec` itself -- a definition that
+ * carried `main` would have to name the outcome type to stay assignable, and
+ * the build reads this generically.
+ */
+export interface AmScriptDefinition {
   readonly kind: "am-script";
+  readonly name: string;
+  readonly context: AmScriptContext;
+  readonly description?: string;
+  readonly outcomes: AmOutcomes;
 }
 
 export interface AmScriptMain {
@@ -41,14 +74,38 @@ export interface AmScriptMain {
 /**
  * Declare a PingAM script. The default export of every file in
  * `src/scripts/` must be the value this returns.
+ *
+ * ```ts
+ * export default defineAmScript({
+ *   name: "risk-check",
+ *   context: "SCRIPTED_DECISION_NODE",
+ *   outcomes: ["high", "low"],
+ *   main: (action) => {
+ *     action.goTo("hihg"); // compile error: not a declared outcome
+ *   },
+ * });
+ * ```
  */
-export function defineAmScript(spec: AmScriptSpec): AmScriptMain {
+export function defineAmScript<const Outcomes extends AmOutcomes>(
+  spec: AmScriptSpec<Outcomes>,
+): AmScriptMain {
+  // `AmOutcomes` already rejects an empty literal, but the emitted JS has no
+  // types and this is the check that would have caught it.
   if (spec.outcomes.length === 0) {
     throw new Error(spec.name + ": a scripted decision node needs an outcome");
   }
   const main = function (): void {
-    spec.main();
+    // The one place the raw global is reached for. `action` is declared with
+    // no usable outcome precisely so that every other reference to it fails to
+    // compile and authors go through the parameter instead.
+    spec.main(action as AmAction<Outcomes[number]>);
   } as { (): void; definition: AmScriptDefinition };
-  main.definition = { ...spec, kind: "am-script" };
+  main.definition = {
+    kind: "am-script",
+    name: spec.name,
+    context: spec.context,
+    outcomes: spec.outcomes,
+    ...(spec.description === undefined ? {} : { description: spec.description }),
+  };
   return main as AmScriptMain;
 }

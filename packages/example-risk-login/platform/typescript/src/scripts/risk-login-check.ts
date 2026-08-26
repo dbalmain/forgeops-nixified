@@ -20,7 +20,10 @@ export default defineAmScript({
   context: "SCRIPTED_DECISION_NODE",
   description: "Routes risky usernames to the high outcome (example)",
   outcomes: ["low", "high"],
-  main: function () {
+  // `action` is handed in, narrowed to the outcomes declared just above: a
+  // `goTo` that misspells one is a compile error, not a journey that
+  // dead-ends in front of a user.
+  main: function (action) {
     // `username` is what a Username Collector puts into shared state.
     // `nodeState.get` hands back the raw value, so coerce it rather than
     // calling anything on it -- it may be null, and it is a Java String, not

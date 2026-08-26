@@ -193,7 +193,7 @@ export default defineAmScript({
   name: "risk-login-check",            // must match the file name
   context: "SCRIPTED_DECISION_NODE",
   outcomes: ["low", "high"],
-  main: function () {
+  main: function (action) {
     // `nodeState.get` returns the raw value: it may be null, and it is a Java
     // String rather than a JavaScript one, so coerce it before calling
     // anything on it.
@@ -208,7 +208,21 @@ export default defineAmScript({
 alongside the journey that calls it.
 
 `outcomes` is not documentation: PingAM draws the node's exits from it, and a
-`goTo` naming an outcome you did not declare dead-ends at runtime.
+`goTo` naming an outcome you did not declare dead-ends at runtime — in front of
+a real user, with nothing useful in the AM log and a successful `fo amster`
+behind it.
+
+So `action` is **handed to `main`**, typed to exactly the outcomes you declared
+just above it. `action.goTo("hihg")` does not compile, and neither does
+`action.goTo(risky ? "high" : "hihg")` — which matters, because the second one
+is invisible to any check that reads the built artefact looking for quoted
+outcome names. Write `outcomes` as a literal array: spreading one in
+(`outcomes: [...names]`) is rejected, since AM needs the exits statically and a
+widened type would silently switch the checking off.
+
+PingAM also puts a bare `action` in global scope. That one is declared as
+accepting no outcome at all, so reaching for it is a compile error rather than
+a way around the check. Take the parameter.
 
 The build emits an amster `Scripts` entity, so an AM script deploys through
 tier 2 (`fo amster`), not by syncing a file into a pod.
