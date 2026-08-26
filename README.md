@@ -29,9 +29,9 @@ step, no bundler, and **no npm dependencies at all**.
 
 | Command | Does |
 | ------- | ---- |
-| `fo up` | Bring the stack up. Idempotent — safe to re-run after a sleep or a failed pull. |
+| `fo up` | Bring the stack up. Idempotent — safe to re-run after a sleep or a failed pull. Exits non-zero if the stack is not ready when it returns; `--timeout 0` waits with no deadline. |
 | `fo down` | Remove the environment. `--destroy` also deletes the cluster. |
-| `fo status` | Pod readiness. |
+| `fo status` | Pod readiness. Exits non-zero if anything is unready, so it works as a gate. |
 | `fo info` | URLs **and passwords**. `--json` for scripting. |
 | `fo logs [COMPONENT]` | Live multi-pod tail. Extra args pass through to `stern`. |
 | `fo logs search 'LOGSQL'` | Indexed search over history. Needs the log console. |
@@ -124,6 +124,11 @@ from ForgeOps' 60 s.
 `--env NAME` (default `dev`) is one flag that derives everything: the namespace,
 the FQDN `NAME.localhost`, and the state directory `.fo/NAME/`. One k3d cluster,
 many namespaces. If you never type it, you never see it.
+
+The name must be a DNS-1123 label — lowercase letters, digits and hyphens,
+starting and ending alphanumeric. That is what the namespace and the hostname
+each require anyway, and it is enforced before anything is derived from it,
+because the name also becomes a path that `fo down --destroy` deletes.
 
 ```sh
 fo up --env feature-x     # https://feature-x.localhost
@@ -516,20 +521,27 @@ Caveats worth stating plainly:
   there is nothing to copy from. That becomes real with `fo init`, which would
   create a workspace separate from the tool; the content-hash machinery it
   needs already exists in `.fo/packages.lock`.
-- `fo upgrade` does not set `RELEASE` in `tools/fo/config.ts`. The image tag is
-  chosen by hand because the chart (`2026.3.0-1849`) and the docs (`8.1.1`)
-  name different builds, and `am-config-upgrader` is published under the second
-  scheme and not the first. It reports and leaves the choice to you.
+- `fo upgrade` does not WRITE `RELEASE` in `tools/fo/config.ts`, though it does
+  now check it: the registry lists tags anonymously, so `fo upgrade` warns when
+  a newer build of the pinned release exists and errors when the pinned tag
+  belongs to a different release than the chart. `RELEASE.productVersion` is
+  still by hand, because the chart (`2026.3.0-1849`) and the docs (`8.1.1`)
+  name different builds and `am-config-upgrader` is published under the second
+  scheme and not the first.
 - There is no CSV-feed example. The PingIDM image ships only a **cloud** CSV
   connector (`storageType` accepts `Google`, `AWS` or `Azure` — there is no
   local-file mode), so an offline CSV example would need a cloud bucket or a
   Groovy scripted connector.
-- `e2e.yml` has never run on GitHub. Its *sequence* has — the whole thing was
-  run locally from a destroyed cluster, twice, and found a real bug — but the
-  runner environment has not. Action versions are pinned to tags that exist
-  today; disk headroom on a standard runner (2.8 GB of images against 14 GB)
-  and PingAM's cold start inside the 60-minute cap are what the first real run
-  has to confirm.
+- `e2e.yml` has now run on GitHub, and the two risks this caveat used to name
+  were both false alarms: the whole job takes **12 minutes** against its
+  60-minute cap, `fo up` accounting for 9m35s, and disk peaks well inside the
+  36 GB free after the reclaim step. What it did find is unexplained: the very
+  first run failed with cert-manager's webhook not Available after 5 minutes,
+  while the second took **25 seconds** for the same install — and a cold local
+  cluster takes 31. So that step is intermittent on GitHub's infrastructure for
+  reasons we have not established, and the nightly will eventually go red on it
+  again. The diagnostics step now dumps the whole cluster rather than one
+  namespace, which is what makes the next occurrence readable.
 - `fo` sets `PLATFORM_TRUST_TRANSACTION_HEADER=true` on every component, which
   is what makes `fo trace` work at all. It means the stack believes a
   client-supplied `X-ForgeRock-TransactionId`. Fine here; in production you

@@ -8,9 +8,18 @@ cd forgeops && fo up      # stack running
 fo down                   # stack gone
 ```
 
-Status: **plan for review**. Nothing is built yet. Decisions taken so far are
-recorded in [Decisions](#decisions); open questions are flagged inline as
-**[OPEN]**.
+Status: **built**. Phases 0-6.3 are implemented, `fo check` and
+`nix flake check` are green, and `e2e.yml` has stood the whole stack up on
+GitHub. Decisions are recorded in [section 2](#2-decisions); anything still
+genuinely open is flagged inline as **[OPEN]**.
+
+**How to read this document.** It began as a plan and grew phase records as the
+work landed, so it is part design intent and part history. Sections 1-9
+describe the intended shape and were written BEFORE the code; where they
+disagree with the code, the code is right and the divergence is a bug in this
+document. The phase records, from Phase 0 onward, are contemporaneous
+notes and are the reliable half. Two known places where the early sections
+describe things that were never built are marked **[NOT BUILT]** inline.
 
 ---
 
@@ -237,13 +246,22 @@ Outputs:
 - **`packages.node-modules`** — built by nix from a committed lockfile, so
   **`npm install` never runs on a developer machine**. This is what keeps the
   "nix and nothing else" promise honest.
-- **`packages.forgeops`** — the upstream CLI, wrapped. `forgeops configure`'s
-  pip/venv dance is replaced by a nix python env plus a generated
-  `lib/dependencies/.configured_version` marker containing the sha1 of
+- **[NOT BUILT] `packages.forgeops`** — the upstream CLI, wrapped, reachable as
+  `fo forgeops …`. The plan was to replace `forgeops configure`'s pip/venv
+  dance with a nix python env plus a generated
+  `lib/dependencies/.configured_version` marker holding the sha1 of
   `requirements.txt` that `ensure_configuration_is_valid_or_exit.py` demands.
-  **pip never runs.** Reachable as `fo forgeops …`.
-- **`apps.default`** — so `nix run github:…/forgeops -- up` works with no
-  checkout and no direnv.
+  **This does not exist.** The flake exposes `fo` and `nodeModules` only, there
+  is no `fo forgeops` subcommand, and nothing here shells out to the upstream
+  CLI — `fo` talks to helm, kubectl and k3d directly, which turned out to be
+  enough. Left recorded because the escape hatch may still be wanted.
+- **`apps.default`** — `nix run github:…/forgeops` resolves and runs.
+  **[NOT BUILT] the "with no checkout" half**: the wrapper sets `FO_ROOT` to
+  the flake's own read-only store path, and `fo up` writes `.fo/<env>/`
+  beneath `FO_ROOT`, so a checkout-free `nix run … -- up` cannot write its
+  state and fails — after potentially creating the cluster. Read-only
+  commands are fine. Making this true needs `FO_ROOT` and a separate writable
+  state root to stop being the same thing.
 
 `.envrc` is one line, `use flake`. direnv is a recommendation, not a
 requirement: `nix develop -c fo up` is the fallback.
@@ -1025,12 +1043,27 @@ empty exactly when nothing is wrong.
 
 Both workflows pass `actionlint`.
 
-### `e2e.yml`'s sequence has been run, locally
+### `e2e.yml` has run on GitHub
 
-The workflow itself has still never run on GitHub, but its steps have: on
-2026-08-26 the whole sequence - `fo down --destroy`, `fo doctor`, `fo up`,
-`fo status`, the `fo trace` smoke test - was run from a destroyed cluster,
-twice, with the same assertions.
+**Updated 2026-08-26.** It has now run twice for real. The second run was green
+end to end in 12 minutes - `fo up` 9m35s, the login trace and the engine probe
+both passing - against a 60-minute cap, and disk was never close to the limit.
+Both risks this section used to worry about were false alarms.
+
+The FIRST run failed, at cert-manager: the webhook was not Available inside a
+hardcoded 5m timeout. That timeout was not the cause. The same install took 25
+seconds on the runner an hour later and 31 seconds into a cold local k3d
+cluster with an empty containerd, so the failure was a ~12x anomaly on GitHub's
+infrastructure and remains unexplained. Expect the nightly to go red on it
+occasionally. What changed is that the diagnostics step now dumps the whole
+cluster instead of the `dev` namespace alone - during that first failure it
+printed "No resources found" three times, because the failure was in a
+namespace it did not look at.
+
+Its steps had also been run locally before any of that: on 2026-08-26 the whole
+sequence - `fo down --destroy`, `fo doctor`, `fo up`, `fo status`, the
+`fo trace` smoke test - was run from a destroyed cluster, twice, with the same
+assertions.
 
 The first run found a real ordering bug. `fo up` deployed the log stack
 **after** `waitReady`, so it returned reporting success while the console was
@@ -1269,8 +1302,12 @@ Answered 2026-08-25:
 
 Still open, flagged **[OPEN]** in place:
 
-1. **IDM hot-reload** from a `live_update` sync (section 3) — the biggest
-   technical assumption here. Phase 0 settles it.
+1. ~~**IDM hot-reload** from a `live_update` sync (section 3) — the biggest
+   technical assumption here. Phase 0 settles it.~~ — **answered by Phase 0,
+   proven.** It works, but only once the dev profile sets
+   `openidm.fileinstall.enabled=true`; ForgeOps ships it `false`. The risk
+   table has recorded this as retired since Phase 0 and this list did not,
+   which is the contradiction the doc pass found.
 2. **FQDN strategy** (section 7) — `<env>.localhost` with an `nip.io` fallback,
    pending a real resolution test on macOS.
 3. ~~**DS access logs** in the collector (section 9)~~ — **answered
