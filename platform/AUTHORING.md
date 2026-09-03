@@ -274,8 +274,10 @@ user.givenName;                                     // string | null
 Optional properties are `T | null`, not `T | undefined`, because PingIDM
 returns JSON `null` for a cleared property rather than omitting the key.
 
-The generated file is committed, and a test fails if it drifts from
-`managed.json`. Run `fo build` after changing the schema.
+The generated file is committed; `managed.json` is not, because it comes out
+of the PingIDM image rather than out of this repo (un-ignore it in a project of
+your own). A test fails if the two drift, and skips when the export has not been
+run. Run `fo build` after changing the schema.
 
 ## Testing
 

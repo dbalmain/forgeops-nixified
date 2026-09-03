@@ -368,8 +368,16 @@ for a property that has been cleared, so `description?: string` type-checks a
 guard that then throws — a real defect found against a live stack, and the
 reason the generated types look pessimistic.
 
-The generated file is committed, so a fresh clone type-checks without a
-cluster, and a test fails if it drifts from `managed.json`.
+`managed.json` itself is **not** committed -- it is PingIDM's own schema,
+extracted from the product image, so this repo does not redistribute it. `fo
+config export idm` puts it in place; `.gitignore` keeps it out of the history.
+In your own project, where the object model is yours, un-ignore it and commit
+it.
+
+The generated file *is* committed, so a fresh clone type-checks without a
+cluster. The drift test compares the two and skips when there is no
+`managed.json` to compare against -- so it guards the file after an export,
+not before one.
 
 ## Upgrading
 
@@ -616,3 +624,13 @@ Caveats worth stating plainly:
   client-supplied `X-ForgeRock-TransactionId`. Fine here; in production you
   would only do that behind a gateway that strips the header at the edge.
 
+## Licence
+
+MIT — see [LICENSE](LICENSE). That covers the tooling in this repo: `fo`, the
+TypeScript authoring pipeline, the flake and the Helm values.
+
+It does **not** cover the Ping Identity Platform itself. `fo` pulls those images
+from Ping's registry and pins ForgeOps as a flake input; both carry Ping's own
+terms, and running the stack means accepting them. Nothing of Ping's is
+redistributed here — `platform/idm/conf/managed.json` is the one file that was,
+and it is now fetched by `fo config export idm` instead.
